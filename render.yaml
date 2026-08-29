@@ -1,0 +1,232 @@
+# Render blueprint for a fully hosted HackerAI in personal mode.
+#
+# Three services, two persistent disks. Personal mode means no WorkOS, no
+# authentication, one shared user identity ("user_personal_local" with
+# ultra-plan entitlements). This is intentional per the operator's decision;
+# the URL is public and unprotected by design.
+#
+# Deploy:
+#   1. Push this repository to GitHub.
+#   2. In Render, "New +" -> Blueprint -> point at this repo.
+#   3. Render will provision the three services in one workspace. On first
+#      sync it prompts for `sync: false` values.
+#   4. After services boot, paste the values noted in the "After first deploy"
+#      block below and re-sync the blueprint.
+#
+# Why Convex and Centrifugo are `web` not `pserv`:
+# The browser connects directly to both — Convex for reactive queries, and
+# Centrifugo for the WebSocket that carries sandbox/PTY streams. `pserv` is
+# only reachable from sibling Render services on the private network, which
+# breaks any browser-side subscription.
+#
+# Kiro Gateway is intentionally not defined here: it lives in a separate
+# repository (~/kiro-gateway) and reads a personal Kiro-CLI SQLite DB. Either
+# deploy it as its own Render service from that repo, or leave
+# KIRO_GATEWAY_BASE_URL unset — the picker will hide the Kiro section and the
+# app still works with OpenCode Zen free models.
+services:
+  # ── Next.js web app ────────────────────────────────────────────────────────
+  # Persistent disk backs .local-storage so uploads survive restarts and
+  # redeploys. Convex reads these files by path (convex/s3Utils.ts) and must
+  # therefore mount the same disk — see hackerai-convex below.
+  - type: web
+    name: hackerai-web
+    runtime: docker
+    dockerfilePath: ./docker/Dockerfile.web
+    plan: starter
+    healthCheckPath: /api/health/connectivity
+    autoDeployTrigger: commit
+    disk:
+      name: hackerai-local-storage
+      mountPath: /app/.local-storage
+      sizeGB: 1
+    envVars:
+      # Personal / local mode: no auth, one shared identity.
+      - key: PERSONAL_MODE
+        value: "true"
+      - key: NEXT_PUBLIC_PERSONAL_MODE
+        value: "true"
+      - key: PERSONAL_IN_PROCESS_AGENT
+        value: "true"
+      - key: NEXT_PUBLIC_PERSONAL_IN_PROCESS_AGENT
+        value: "true"
+      - key: DISABLE_E2B
+        value: "true"
+      - key: NEXT_PUBLIC_DISABLE_E2B
+        value: "true"
+
+      # Public base URL (browser-facing). Render sets RENDER_EXTERNAL_URL to
+      # this service's own https://…onrender.com hostname; we alias it to the
+      # names the app expects, matching lib/auth/personal-mode.ts logic that
+      # derives PERSONAL_JWT_ISSUER from NEXT_PUBLIC_BASE_URL.
+      - key: NEXT_PUBLIC_BASE_URL
+        fromService:
+          name: hackerai-web
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: LOCAL_STORAGE_BASE_URL
+        fromService:
+          name: hackerai-web
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+
+      # Browser-facing Convex URL. Convex is a `web` service so the browser
+      # can reach it directly over HTTPS.
+      - key: NEXT_PUBLIC_CONVEX_URL
+        fromService:
+          name: hackerai-convex
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: CONVEX_URL
+        fromService:
+          name: hackerai-convex
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+
+      # Centrifugo. `wss://…onrender.com/connection/websocket` is the browser
+      # WebSocket endpoint; Render only exposes the base URL, so the path is
+      # appended below and the ws scheme is what centrifuge-js expects.
+      # NEXT_PUBLIC_CENTRIFUGO_WS_URL is set manually after first deploy — see
+      # the "After first deploy" section, since Blueprint YAML cannot rewrite
+      # https:// to wss:// nor append a path.
+      - key: NEXT_PUBLIC_CENTRIFUGO_WS_URL
+        sync: false
+      - key: CENTRIFUGO_WS_URL
+        sync: false
+      - key: CENTRIFUGO_TOKEN_SECRET
+        fromService:
+          name: hackerai-centrifugo
+          type: web
+          envVarKey: CENTRIFUGO_TOKEN_HMAC_SECRET_KEY
+      - key: CENTRIFUGO_API_KEY
+        fromService:
+          name: hackerai-centrifugo
+          type: web
+          envVarKey: CENTRIFUGO_API_KEY
+
+      # Convex service-role key. Set manually after Convex is running: fetch
+      # from the Convex admin UI (or generate one) and paste into both
+      # hackerai-web and hackerai-convex so the two agree.
+      - key: CONVEX_SERVICE_ROLE_KEY
+        sync: false
+
+      # Personal JWT keypair. Generate locally with `pnpm personal:setup`,
+      # then paste the PEM contents. `lib/auth/personal-jwt.ts` accepts
+      # either raw PEM (with real newlines) or base64-encoded PEM as env
+      # values — Render's dashboard supports multi-line values natively.
+      - key: PERSONAL_JWT_PRIVATE_KEY
+        sync: false
+      - key: PERSONAL_JWT_PUBLIC_KEY
+        sync: false
+      - key: PERSONAL_JWT_AUDIENCE
+        value: hackerai-personal
+      # JWKS URL is set manually to the concrete https://…/.well-known/jwks.json
+      # because Blueprint YAML cannot append a path to another service's URL.
+      - key: PERSONAL_JWT_JWKS_URL
+        sync: false
+      - key: PERSONAL_JWT_ISSUER
+        fromService:
+          name: hackerai-web
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+
+      # Persistent storage mount, matches the disk mountPath above.
+      - key: LOCAL_STORAGE_DIR
+        value: /app/.local-storage
+
+      # Free-quota identity hash salt. Required by lib/rate-limit code paths
+      # even in personal mode where quota is effectively unlimited.
+      - key: ACCOUNT_IDENTITY_HMAC_SECRET
+        generateValue: true
+
+      # Optional AI providers. Left as sync:false so unset values are visible
+      # in the dashboard rather than silently missing.
+      - key: OPENCODE_ZEN_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: KIRO_GATEWAY_BASE_URL
+        sync: false
+      - key: KIRO_GATEWAY_API_KEY
+        sync: false
+
+  # ── Self-hosted Convex backend ────────────────────────────────────────────
+  # Web service (browser reachable) so the reactive-query client can connect
+  # directly. Persistent disk holds the database, and the shared local-storage
+  # disk is mounted read-only so convex/s3Utils.ts can fs.stat() files that
+  # the web service wrote.
+  #
+  # KNOWN LIMITATION: Render disks attach to one service at a time. If Convex
+  # cannot mount the same disk as the web service, `getS3ObjectSizeBytes` will
+  # fail for user-uploaded files. Two fixes: (1) configure AWS/R2 S3 env vars
+  # so the S3 path is used, or (2) keep the disk attached only to the web
+  # service and accept that size-based accounting for local uploads is
+  # unavailable in this deployment. Non-fatal for most flows.
+  - type: web
+    name: hackerai-convex
+    runtime: image
+    image:
+      url: ghcr.io/get-convex/convex-backend:latest
+    plan: starter
+    healthCheckPath: /health
+    disk:
+      name: hackerai-convex-data
+      mountPath: /convex/data
+      sizeGB: 1
+    envVars:
+      # Convex auth.config.ts reads these to validate the personal JWT.
+      # Values must match hackerai-web's copies.
+      - key: PERSONAL_JWT_ISSUER
+        fromService:
+          name: hackerai-web
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: PERSONAL_JWT_JWKS_URL
+        sync: false
+      - key: PERSONAL_JWT_AUDIENCE
+        value: hackerai-personal
+      # Shared service-role key with hackerai-web.
+      - key: CONVEX_SERVICE_ROLE_KEY
+        sync: false
+
+  # ── Centrifugo real-time relay ────────────────────────────────────────────
+  # Web service so the browser can reach the WebSocket endpoint directly.
+  # No disk: state is in-memory and reconnection recovers subscriptions.
+  - type: web
+    name: hackerai-centrifugo
+    runtime: image
+    image:
+      url: centrifugo/centrifugo:v5
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: CENTRIFUGO_TOKEN_HMAC_SECRET_KEY
+        generateValue: true
+      - key: CENTRIFUGO_API_KEY
+        generateValue: true
+      # Explicit port so Render's health check hits the right listener.
+      - key: CENTRIFUGO_PORT
+        value: "10000"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# After first deploy, set these `sync: false` values in the dashboard:
+#
+#   hackerai-web:
+#     PERSONAL_JWT_PRIVATE_KEY = contents of .personal/jwt-private.pem
+#     PERSONAL_JWT_PUBLIC_KEY  = contents of .personal/jwt-public.pem
+#     PERSONAL_JWT_JWKS_URL    = https://<hackerai-web-url>/.well-known/jwks.json
+#     CONVEX_SERVICE_ROLE_KEY  = any random 64-char string; paste same into hackerai-convex
+#     NEXT_PUBLIC_CENTRIFUGO_WS_URL = wss://<hackerai-centrifugo-url>/connection/websocket
+#     CENTRIFUGO_WS_URL             = same value as above
+#     OPENROUTER_API_KEY, OPENAI_API_KEY = your provider keys
+#     KIRO_GATEWAY_BASE_URL, KIRO_GATEWAY_API_KEY = only if you expose your
+#       local gateway publicly (see repo README for tunneling options)
+#
+#   hackerai-convex:
+#     PERSONAL_JWT_JWKS_URL   = same value as hackerai-web
+#     CONVEX_SERVICE_ROLE_KEY = same value as hackerai-web
+#
+# Then trigger a manual redeploy of hackerai-web so the new env vars land.
+# ─────────────────────────────────────────────────────────────────────────────
