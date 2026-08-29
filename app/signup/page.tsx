@@ -1,15 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getConvexClient } from "@/lib/db/convex-client";
 import { ArrowRight, Gift } from "lucide-react";
-import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
-import {
-  getReferralRewardConfig,
-  isValidReferralCode,
-} from "@/lib/referrals/config";
-import { workos } from "@/app/api/workos";
 
 export const runtime = "nodejs";
 
@@ -52,74 +45,13 @@ const getSafeDisplayName = (user: {
   return parts.length > 0 ? parts.join(" ") : undefined;
 };
 
-const getReferralInviteContext = async (
-  referralCode: string,
-): Promise<{ active: boolean; referrerName?: string }> => {
-  try {
-    const invite = await getConvexClient().query(
-      api.referrals.getReferralInvite,
-      {
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        referralCode,
-      },
-    );
-
-    if (!invite?.active) return { active: false };
-
-    try {
-      const referrer = await workos.userManagement.getUser(
-        invite.referrerUserId,
-      );
-      return { active: true, referrerName: getSafeDisplayName(referrer) };
-    } catch (error) {
-      console.warn("[signup] Failed to resolve referral referrer", {
-        referralCode,
-        referrerUserId: invite.referrerUserId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return { active: true };
-    }
-  } catch (error) {
-    console.warn("[signup] Failed to resolve referral invite", {
-      referralCode,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return { active: false };
-  }
-};
-
 export default async function SignupPage({ searchParams }: SignupPageProps) {
   const params = await searchParams;
-  const referralCode =
-    firstValue(params.referral_code) ?? firstValue(params.ref);
 
-  if (!referralCode || !isValidReferralCode(referralCode)) {
-    redirect(buildAuthHref(params));
-  }
-
-  const invite = await getReferralInviteContext(referralCode);
-  if (!invite.active) {
-    redirect(
-      buildAuthHref({
-        ...params,
-        referral_code: undefined,
-        ref: undefined,
-      }),
-    );
-  }
-
-  const authHref = buildAuthHref({
-    ...params,
-    referral_code: referralCode,
-  });
-  const bonusUnits = getReferralRewardConfig().referredSignupBonusUnits;
-  const bonusHeading =
-    bonusUnits > 0
-      ? `Sign up and get ${bonusUnits} extra free request${bonusUnits === 1 ? "" : "s"}`
-      : "Sign up through a referral link";
-  const referralLine = invite.referrerName
-    ? `You're signing up through ${invite.referrerName}'s referral link. Create your account to redeem your starter requests.`
-    : "You're signing up through a custom referral link. Create your account to redeem your starter requests.";
+  // No referral validation - just show the signup page
+  const bonusUnits = 0;
+  const bonusHeading = "Sign up for HackerAI";
+  const referralLine = "Create your account to access AI penetration testing features.";
 
   return (
     <main className="bg-background text-foreground flex min-h-dvh items-center justify-center px-5 py-10">
@@ -147,8 +79,8 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
         </div>
 
         <Button asChild size="lg" className="mt-6 h-12 w-full text-base">
-          <Link href={authHref}>
-            Continue to sign up
+          <Link href="/login">
+            Continue to log in
             <ArrowRight className="size-4" />
           </Link>
         </Button>
@@ -177,8 +109,8 @@ export default async function SignupPage({ searchParams }: SignupPageProps) {
           </Link>
           . Learn how we handle your data on our{" "}
           <Link className="underline underline-offset-4" href="/trust">
-            Security &amp; Trust
-          </Link>{" "}
+            Security & Trust
+          </Link>
           page.
         </p>
       </div>

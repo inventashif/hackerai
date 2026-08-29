@@ -1779,6 +1779,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 sandboxPreference: sandboxPreferenceRef.current,
                 agentPermissionMode: agentPermissionModeRef.current,
                 selectedModel: requestSelectedModelRef.current,
+                reasoningTier: (() => {
+                  try {
+                    const { readReasoningTier } = require("@/lib/utils/client-storage");
+                    return readReasoningTier() ?? undefined;
+                  } catch {
+                    return undefined;
+                  }
+                })(),
               },
             },
           );

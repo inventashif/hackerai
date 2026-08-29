@@ -1,11 +1,47 @@
 import {
   canUseExtraUsage,
   canUseMaxModel,
+  coerceSelectedModel,
+  isKiroModel,
+  isSelectedModel,
   normalizeMaxModelForSubscription,
   normalizeSelectedModelForSubscription,
   normalizeSelectedModelOverrideForSubscription,
   withExtraUsageBillingForModel,
 } from "../chat";
+
+describe("Kiro gateway model ids", () => {
+  it("recognizes prefixed ids so new gateway models need no code change", () => {
+    expect(isKiroModel("kiro-claude-opus-5")).toBe(true);
+    expect(isKiroModel("kiro-qwen3-coder-next")).toBe(true);
+    // Not in the static catalog, but still valid via the prefix rule.
+    expect(isKiroModel("kiro-some-future-model")).toBe(true);
+  });
+
+  it("rejects the bare prefix and unrelated ids", () => {
+    expect(isKiroModel("kiro-")).toBe(false);
+    expect(isKiroModel("kiro")).toBe(false);
+    expect(isKiroModel("hackerai-pro")).toBe(false);
+    expect(isKiroModel("deepseek-v4-flash-free")).toBe(false);
+    expect(isKiroModel(null)).toBe(false);
+  });
+
+  it("survives a coerce round-trip instead of falling back to auto", () => {
+    // Regression: these ids previously returned null and callers reset to "auto",
+    // so a Kiro selection could never persist.
+    expect(coerceSelectedModel("kiro-claude-opus-5")).toBe("kiro-claude-opus-5");
+    expect(coerceSelectedModel("kiro-auto")).toBe("kiro-auto");
+    expect(isSelectedModel("kiro-claude-sonnet-4.5")).toBe(true);
+  });
+
+  it("still rejects unrecognized values", () => {
+    expect(coerceSelectedModel("kiro-")).toBeNull();
+    expect(coerceSelectedModel("totally-unknown")).toBeNull();
+    // Prototype keys must not leak through via `in`.
+    expect(coerceSelectedModel("toString")).toBeNull();
+    expect(coerceSelectedModel("constructor")).toBeNull();
+  });
+});
 
 describe("normalizeSelectedModelForSubscription", () => {
   it("forces free users to auto even when a paid model is stored", () => {

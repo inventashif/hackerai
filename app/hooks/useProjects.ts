@@ -1,6 +1,6 @@
 "use client";
 
-import { useConvexAuth, useMutation, usePaginatedQuery } from "convex/react";
+import { useConvexAuth, useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 
@@ -20,6 +20,15 @@ export const useProjects = (initialNumItems = 10) => {
         ? query.results
         : undefined,
   };
+};
+
+export const useProject = (projectId: Id<"projects"> | null) => {
+  const { isLoading, isAuthenticated } = useConvexAuth();
+  const shouldRunQuery = !isLoading && isAuthenticated && projectId !== null;
+  return useQuery(
+    api.projects.get,
+    shouldRunQuery ? { id: projectId } : "skip",
+  );
 };
 
 export const useProjectThreads = (

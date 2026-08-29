@@ -1,5 +1,7 @@
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextResponse, type NextRequest } from "next/server";
+import { isPersonalMode } from "@/lib/auth/personal-mode";
+import { handlePersonalProxy } from "@/lib/auth/personal-proxy";
 import { isRateLimitError } from "@/lib/api/response";
 import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
 import {
@@ -245,6 +247,10 @@ function buildEndedSessionResponse(
 }
 
 export default async function proxy(request: NextRequest) {
+  if (isPersonalMode()) {
+    return handlePersonalProxy(request);
+  }
+
   const pathname = request.nextUrl.pathname;
 
   if (isUnsupportedRootPageRequest(request, pathname)) {

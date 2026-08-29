@@ -48,11 +48,13 @@ import {
   isContextUsageEnabled,
   isProviderApiError,
   injectNotesIntoMessages,
+  injectMemoryIntoMessages,
   getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
+import { areNotesEnabled } from "@/lib/notes/gate";
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
@@ -2350,7 +2352,14 @@ export const agentLongTask = task({
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
 
-      const notesEnabled = userCustomization?.include_notes ?? true;
+      // Agent Long is always agent mode, so the plan condition is always
+      // satisfied here — but route it through the shared gate so this cannot
+      // drift from the chat route if the rule ever changes.
+      const notesEnabled = areNotesEnabled(
+        mode,
+        subscription,
+        userCustomization,
+      );
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
         mode,
@@ -3207,12 +3216,21 @@ export const agentLongTask = task({
             const noteInjectionOpts = {
               userId,
               subscription,
-              shouldIncludeNotes: userCustomization?.include_notes ?? true,
+              // Same single gate used for tool registration above, so the
+              // prompt, the tools, and this injection cannot disagree.
+              shouldIncludeNotes: notesEnabled,
             };
             finalMessages = await injectNotesIntoMessages(
               finalMessages,
               noteInjectionOpts,
             );
+
+            // Structured memory shares the notes gate; see lib/notes/gate.ts.
+            finalMessages = await injectMemoryIntoMessages(finalMessages, {
+              userId,
+              subscription,
+              shouldIncludeMemory: notesEnabled,
+            });
 
             // Mutable stream state — updated in-place by the shared runner and
             // read back here in toUIMessageStream.onFinish.

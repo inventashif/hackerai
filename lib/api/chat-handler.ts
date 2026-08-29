@@ -88,6 +88,7 @@ import {
   SummarizationTracker,
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
+  injectMemoryIntoMessages,
   assertFreeAgentGates,
   assertChatModeAccess,
   buildExtraUsageConfig,
@@ -185,6 +186,7 @@ import {
 } from "@/lib/api/chat-request-validation";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { areNotesEnabled } from "@/lib/notes/gate";
 import {
   createAgentStream,
   initAgentStreamState,
@@ -253,6 +255,7 @@ export const createChatHandler = () => {
         regenerate,
         sandboxPreference,
         selectedModel: rawSelectedModel,
+        reasoningTier: rawReasoningTier,
         isAutoContinue,
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
@@ -265,6 +268,7 @@ export const createChatHandler = () => {
         regenerate?: boolean;
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
+        reasoningTier?: string;
         isAutoContinue?: boolean;
         useClientMessagesForRegenerate?: boolean;
         limitRescue?: unknown;
@@ -298,6 +302,12 @@ export const createChatHandler = () => {
           coerceSelectedModel(rawSelectedModel ?? null),
           subscription,
         );
+      const { coerceReasoningTier, normalizeReasoningTierForSubscription } =
+        await import("@/types/chat");
+      const reasoningTier = normalizeReasoningTierForSubscription(
+        coerceReasoningTier(rawReasoningTier ?? null),
+        subscription,
+      );
       await assertUserCanMakeCostIncurringRequest(userId);
       usageRefundTracker.setUser(userId, subscription, organizationId);
       assertChatModeAccess({ mode, subscription });
@@ -466,9 +476,11 @@ export const createChatHandler = () => {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
 
-      const notesEnabled =
-        (subscription !== "free" || isAgentMode(mode)) &&
-        (userCustomization?.include_notes ?? true);
+      const notesEnabled = areNotesEnabled(
+        mode,
+        subscription,
+        userCustomization,
+      );
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
         mode,
@@ -949,6 +961,9 @@ export const createChatHandler = () => {
               selectedModel,
               userCustomization,
               sandboxContext,
+              undefined,
+              false,
+              reasoningTier,
             );
 
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
@@ -982,16 +997,29 @@ export const createChatHandler = () => {
 
             // Inject notes into messages instead of system prompt
             // to keep the system prompt stable for prompt caching
-            const shouldIncludeNotes = userCustomization?.include_notes ?? true;
             const noteInjectionOpts = {
               userId,
               subscription,
-              shouldIncludeNotes,
+              // Reuse the single gate computed above. This previously
+              // recomputed only the `include_notes` toggle and dropped the
+              // plan/mode condition, so a free Ask-mode user got notes
+              // injected into their messages while the system prompt said the
+              // notes tool was disabled and the 4 tools were not registered.
+              shouldIncludeNotes: notesEnabled,
             };
             finalMessages = await injectNotesIntoMessages(
               finalMessages,
               noteInjectionOpts,
             );
+
+            // Structured memory shares the notes gate: both are persistent
+            // cross-session knowledge governed by one plan rule and one
+            // Settings > Personalization opt-out.
+            finalMessages = await injectMemoryIntoMessages(finalMessages, {
+              userId,
+              subscription,
+              shouldIncludeMemory: notesEnabled,
+            });
 
             // Mutable stream state — updated in-place by the shared runner.
             const state = initAgentStreamState(

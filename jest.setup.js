@@ -14,6 +14,23 @@ global.TextDecoder = TextDecoder;
 global.ReadableStream = ReadableStream;
 global.TransformStream = TransformStream;
 
+// Default `fetch` for jsdom, which does not provide one. Components that fetch
+// on mount (e.g. ModelSelector's Zen/Kiro catalogs) would otherwise throw
+// "fetch is not defined" during render.
+//
+// Assigned only when absent, and deliberately without a `beforeEach` reset, so
+// the many suites that install their own `global.fetch` keep full control.
+// `jest.clearAllMocks()` below clears calls but preserves this implementation.
+if (typeof global.fetch === "undefined") {
+  global.fetch = jest.fn(async () => ({
+    ok: true,
+    status: 200,
+    headers: new Map(),
+    json: async () => ({}),
+    text: async () => "",
+  }));
+}
+
 // Mock window.matchMedia
 Object.defineProperty(window, "matchMedia", {
   writable: true,

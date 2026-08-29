@@ -87,10 +87,19 @@ export function useSandboxPreference(
     useState<SandboxPreference>(() => {
       if (typeof window === "undefined") return "e2b";
       const stored = localStorage.getItem("sandbox-preference");
-      if (stored && stored !== "tauri") return stored as SandboxPreference;
-      // Default to Cloud on Desktop; user can switch to Local if desired
-      // if (activeBridge?.getConnectionId())
-      //   return activeBridge.getConnectionId()!;
+      if (stored && stored !== "tauri") {
+        if (
+          process.env.NEXT_PUBLIC_PERSONAL_MODE === "true" &&
+          stored === "e2b"
+        ) {
+          return "desktop";
+        }
+        return stored as SandboxPreference;
+      }
+      // Personal/local-only deployments never default to the hosted cloud sandbox.
+      if (process.env.NEXT_PUBLIC_PERSONAL_MODE === "true") {
+        return "desktop";
+      }
       return "e2b";
     });
 

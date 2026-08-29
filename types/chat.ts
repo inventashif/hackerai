@@ -36,7 +36,11 @@ export function coerceAgentPermissionMode(value: unknown): AgentPermissionMode {
 }
 
 export type SelectedModel =
-  "auto" | "hackerai-standard" | "hackerai-pro" | "hackerai-max";
+  | "auto"
+  | "hackerai-standard"
+  | "hackerai-pro"
+  | "hackerai-max"
+  | (string & {});
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
@@ -44,6 +48,87 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "hackerai-pro",
   "hackerai-max",
 ];
+
+// Zen free models (fetched from https://opencode.ai/zen/v1/models)
+// Kept in sync with app/api/zen/models fallback; used for type helpers.
+export const ZEN_FREE_MODELS = [
+  "deepseek-v4-flash-free",
+  "hy3-free",
+  "laguna-s-2.1-free",
+  "mimo-v2.5-free",
+  "muse-spark-1.2-contributor-free",
+  "nemotron-3-ultra-free",
+  "nemotron-3.5-lightning-free",
+  "x-preview-f-free",
+  "big-pickle",
+] as const;
+
+export type ZenFreeModel = (typeof ZEN_FREE_MODELS)[number];
+
+export function isZenFreeModel(value: string | null): value is ZenFreeModel {
+  return (
+    typeof value === "string" &&
+    (value.endsWith("-free") || (ZEN_FREE_MODELS as readonly string[]).includes(value))
+  );
+}
+
+export function isZenModel(value: string | null): boolean {
+  return typeof value === "string" && isZenFreeModel(value);
+}
+
+/**
+ * Prefix for Kiro Gateway model ids (see `lib/ai/providers/kiro-models.ts`).
+ * Duplicated here rather than imported so this module stays free of `lib/ai/`
+ * dependencies and safe to bundle into client components, matching the
+ * `ZEN_FREE_MODELS` approach above.
+ */
+export const KIRO_MODEL_PREFIX = "kiro-";
+
+/**
+ * Prefix check rather than an allowlist: the gateway's catalog is dynamic, so
+ * a gateway upgrade should not require a code change here. The server still
+ * resolves the concrete model, and unknown ids fail at request time.
+ */
+export function isKiroModel(value: string | null): boolean {
+  return (
+    typeof value === "string" &&
+    value.startsWith(KIRO_MODEL_PREFIX) &&
+    value.length > KIRO_MODEL_PREFIX.length
+  );
+}
+
+export type ReasoningTier = "quick" | "thorough" | "deep";
+
+export const REASONING_TIERS: readonly ReasoningTier[] = ["quick", "thorough", "deep"] as const;
+
+export function isReasoningTier(value: unknown): value is ReasoningTier {
+  return typeof value === "string" && (REASONING_TIERS as readonly string[]).includes(value);
+}
+
+export function coerceReasoningTier(value: unknown): ReasoningTier | null {
+  if (isReasoningTier(value)) return value;
+  return null;
+}
+
+export function getDefaultReasoningTier(subscription: SubscriptionTier): ReasoningTier {
+  if (subscription === "free") return "quick";
+  if (subscription === "ultra") return "deep";
+  return "thorough";
+}
+
+export function canUseReasoningTier(tier: ReasoningTier, subscription: SubscriptionTier): boolean {
+  if (tier === "deep" && subscription === "free") return false;
+  return true;
+}
+
+export function normalizeReasoningTierForSubscription(
+  tier: ReasoningTier | null | undefined,
+  subscription: SubscriptionTier,
+): ReasoningTier {
+  if (!tier || !isReasoningTier(tier)) return getDefaultReasoningTier(subscription);
+  if (!canUseReasoningTier(tier, subscription)) return getDefaultReasoningTier(subscription);
+  return tier;
+}
 
 /**
  * Map of legacy ids to the current `SelectedModel` union. Covers two prior
@@ -81,6 +166,9 @@ export function coerceSelectedModel(
   if ((SELECTABLE_MODELS as readonly string[]).includes(value)) {
     return value as SelectedModel;
   }
+  if (isZenModel(value) || isKiroModel(value)) {
+    return value as SelectedModel;
+  }
   // Use Object.hasOwn (not the `in` operator) to avoid matching inherited
   // properties like "toString" or "constructor" if a hostile/garbage value
   // ever reaches this function via localStorage or the request body.
@@ -92,7 +180,10 @@ export function coerceSelectedModel(
 
 export function isSelectedModel(value: string | null): value is SelectedModel {
   return (
-    value !== null && (SELECTABLE_MODELS as readonly string[]).includes(value)
+    value !== null &&
+    ((SELECTABLE_MODELS as readonly string[]).includes(value) ||
+      isZenModel(value) ||
+      isKiroModel(value))
   );
 }
 

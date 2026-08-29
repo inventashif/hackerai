@@ -15,7 +15,35 @@
 
 </div>
 
-## Getting started
+## Personal / local setup (no WorkOS, no E2B)
+
+For a personal laptop install that uses a local account, the local sandbox,
+and [OpenCode Zen](https://opencode.ai/zen) free models:
+
+```bash
+pnpm install
+pnpm personal:setup
+```
+
+Paste your OpenCode Zen API key into `.env.local` as `OPENCODE_ZEN_API_KEY`,
+then:
+
+```bash
+pnpm personal:dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). You are signed in
+automatically. In Settings → Remote Control, generate a sandbox token and
+connect your machine:
+
+```bash
+pnpm local-sandbox --token hsb_your_token --convex-url http://127.0.0.1:3210
+```
+
+Ask and Agent both run in the Next.js process. Commands execute on your
+computer through the local sandbox client, not E2B.
+
+## Hosted production setup
 
 ### Prerequisites
 

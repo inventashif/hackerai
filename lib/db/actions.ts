@@ -1907,15 +1907,16 @@ export async function saveChatSummary({
         )
       : undefined;
 
-    await getConvexClient().mutation(api.chats.saveLatestSummary, {
+    // Returns the inserted summary id, or null when the mutation skipped the
+    // write (chat deleted mid-flight, cutoff message missing, stale summary).
+    // Callers use the id to link derived records such as memory nodes.
+    return await getConvexClient().mutation(api.chats.saveLatestSummary, {
       serviceKey,
       chatId,
       summaryText,
       summaryUpToMessageId,
       ...(compactedMetadata ? { metadata: compactedMetadata } : {}),
     });
-
-    return;
   } catch (error) {
     console.error("[DB Actions] Failed to save chat summary", {
       chatId,

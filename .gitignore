@@ -29,6 +29,28 @@
 # production
 /build
 
+# Local runtime state and user uploads
+#
+# `.local-storage` contains real user files and may include private bug-bounty
+# program data, customer information, findings, and PoCs. It must never enter
+# Git history — deleting it in a later commit would not remove it from clones,
+# forks, caches, or GitHub's event stream.
+/.local-storage/
+/.convex/
+/.swc/
+/data/
+/logs/
+/output/
+/cache/
+/debug_logs/
+
+# Local security-research workspaces. These may contain private-program scope,
+# confirmed findings, PoCs, customer data, and NDA material. Keep them outside
+# source control even when this repository itself is private: Git history is
+# durable and can later be mirrored, forked, or accidentally made public.
+/findings-*/
+/*_analysis/
+
 # misc
 .DS_Store
 *.pem
@@ -58,5 +80,8 @@ packages/local/node_modules/
 # Desktop (Tauri)
 packages/desktop/node_modules/
 packages/desktop/src-tauri/target/
+
+.personal/
+public/.well-known/jwks.json
 
 .trigger

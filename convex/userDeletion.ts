@@ -16,6 +16,10 @@ export const USER_DELETION_TABLE_POLICY = {
     "files",
     "feedback",
     "notes",
+    // Structured memory is persistent user knowledge (findings, targets,
+    // methodology) and must be destroyed with the account, exactly like notes.
+    "memory_nodes",
+    "memory_edges",
     "user_customization",
     "extra_usage",
     "team_member_usage",
@@ -373,6 +377,22 @@ async function cleanupUserDataForUser(
     "by_user_and_updated",
     (q) => q.eq("user_id", userId),
   );
+  // Both memory indexes are prefixed on user_id, so an equality on user_id
+  // alone collects every row for the user regardless of status or position.
+  const memoryNodesBatch = await collectByIndexBatch<Doc<"memory_nodes">>(
+    ctx,
+    budget,
+    "memory_nodes",
+    "by_user_and_path",
+    (q) => q.eq("user_id", userId),
+  );
+  const memoryEdgesBatch = await collectByIndexBatch<Doc<"memory_edges">>(
+    ctx,
+    budget,
+    "memory_edges",
+    "by_user_and_from",
+    (q) => q.eq("user_id", userId),
+  );
   const customizationBatch = await collectByIndexBatch<
     Doc<"user_customization">
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
@@ -433,6 +453,8 @@ async function cleanupUserDataForUser(
     chatsBatch,
     filesBatch,
     notesBatch,
+    memoryNodesBatch,
+    memoryEdgesBatch,
     customizationBatch,
     messagesBatch,
     tempStreamsBatch,
@@ -449,6 +471,8 @@ async function cleanupUserDataForUser(
   const projects = projectsBatch.docs;
   const files = filesBatch.docs;
   const notes = notesBatch.docs;
+  const memoryNodes = memoryNodesBatch.docs;
+  const memoryEdges = memoryEdgesBatch.docs;
   const customization = customizationBatch.docs;
   const tempStreams = tempStreamsBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
@@ -478,6 +502,10 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
+  // Edges before nodes so a partial failure cannot leave edges pointing at
+  // deleted nodes.
+  await deleteDocs(ctx, stats, "memory_edges", memoryEdges, mode);
+  await deleteDocs(ctx, stats, "memory_nodes", memoryNodes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
   await deleteDocs(ctx, stats, "temp_streams", tempStreams, mode);
   await deleteDocs(

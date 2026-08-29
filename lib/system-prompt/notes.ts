@@ -8,17 +8,21 @@ interface Note {
 }
 
 /**
- * Static message for the system prompt when notes are disabled.
+ * Static message for the system prompt when persistent memory is disabled.
  * This is stable across the session and safe for prompt caching.
+ *
+ * Covers BOTH the note tools and the structured `memory` tool, because they
+ * share a single gate (`areNotesEnabled` in lib/notes/gate.ts). Mentioning only
+ * notes would leave the model unable to explain why it cannot remember things.
  */
 export const getNotesDisabledMessage = (
   isFreeUser: boolean = false,
 ): string => `<notes>
-The notes tool is disabled. Do not use it.
+The notes and memory tools are disabled. Do not use them. You cannot store anything that persists after this conversation.
 ${
   isFreeUser
-    ? "If the user explicitly asks you to save a note, let them know that notes are available on paid plans and suggest upgrading."
-    : "If the user explicitly asks you to save a note, politely ask them to go to **Settings > Personalization > Notes** to enable notes."
+    ? "If the user asks you to save or remember something, let them know that persistent notes and memory are available on paid plans and suggest upgrading."
+    : "If the user asks you to save or remember something, politely ask them to go to **Settings > Personalization > Notes** to enable notes and memory."
 }
 </notes>`;
 

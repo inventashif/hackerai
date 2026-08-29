@@ -1,6 +1,34 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+
+const readLocalDeployment = () => {
+  const fromEnv = process.env.CONVEX_DEPLOYMENT?.trim() || "";
+  const envPath = path.join(process.cwd(), ".env.local");
+  let fromFile = "";
+  if (existsSync(envPath)) {
+    const match = readFileSync(envPath, "utf8").match(
+      /^CONVEX_DEPLOYMENT=(.*)$/m,
+    );
+    fromFile = (match?.[1] || "").trim();
+    if (
+      (fromFile.startsWith('"') && fromFile.endsWith('"')) ||
+      (fromFile.startsWith("'") && fromFile.endsWith("'"))
+    ) {
+      fromFile = fromFile.slice(1, -1);
+    }
+    fromFile = fromFile.split(/\s+#/)[0].trim();
+  }
+  return fromFile || fromEnv.split(/\s+#/)[0].trim();
+};
+
+const existingDeployment = readLocalDeployment();
+if (/^local:[A-Za-z0-9._-]+$/.test(existingDeployment)) {
+  console.log(`[convex-local] Using existing ${existingDeployment}`);
+  process.exit(0);
+}
 
 const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const selectArgs = ["exec", "convex", "deployment", "select", "local"];

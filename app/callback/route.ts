@@ -104,6 +104,11 @@ const authHandler = handleAuth({
 });
 
 export async function GET(request: NextRequest) {
+  const { isPersonalMode } = await import("@/lib/auth/personal-mode");
+  if (isPersonalMode()) {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+
   // Short-circuit the single most common recoverable case — no PKCE cookie
   // at all (stale/abandoned flow, prefetch, ITP) — before authkit runs, so
   // authkit's unconditional `[AuthKit callback error]` console.error doesn't

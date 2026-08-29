@@ -12,7 +12,10 @@ import {
   type RetainedTailDoc,
 } from "./lib/retainedTail";
 import {
+  coerceReasoningTier,
   coerceSelectedModel,
+  getDefaultReasoningTier,
+  normalizeReasoningTierForSubscription,
   normalizeSelectedModelForSubscription,
 } from "../types/chat";
 import {
@@ -764,6 +767,9 @@ export const updateChatPreferences = mutation({
     mode: v.optional(
       v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
     ),
+    reasoningTier: v.optional(
+      v.union(v.literal("quick"), v.literal("thorough"), v.literal("deep")),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -806,6 +812,14 @@ export const updateChatPreferences = mutation({
     }
     if (args.mode !== undefined) {
       patch.default_model_slug = args.mode;
+    }
+    if (args.reasoningTier !== undefined) {
+      const tier = coerceReasoningTier(args.reasoningTier);
+      const subscription = resolveSubscriptionTier(parseEntitlements(user.entitlements));
+      const normalized = tier
+        ? normalizeReasoningTierForSubscription(tier, subscription)
+        : getDefaultReasoningTier(subscription);
+      patch.reasoning_tier = normalized;
     }
     if (Object.keys(patch).length === 0) return null;
 
@@ -1952,7 +1966,12 @@ export const saveLatestSummary = mutation({
       }),
     ),
   },
-  returns: v.null(),
+  // Returns the inserted summary id so callers can link derived records (e.g.
+  // structured memory nodes) back to this specific compaction. `null` means no
+  // row was written: chat deleted mid-flight, cutoff message missing, or the
+  // incoming summary was stale. Callers must treat null as "skip linkage"
+  // rather than an error.
+  returns: v.union(v.id("chat_summaries"), v.null()),
   handler: async (ctx, args) => {
     // Verify service role key
     validateServiceKey(args.serviceKey);
@@ -2150,7 +2169,7 @@ export const saveLatestSummary = mutation({
         deleted_previous_summary: deletedPreviousSummary,
       });
 
-      return null;
+      return summaryId;
     } catch (error) {
       convexLogger.error("chat_summary_save_failed", {
         service: "convex",

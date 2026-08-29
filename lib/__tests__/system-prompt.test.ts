@@ -523,7 +523,10 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
     expect(prompt).toContain("wafw00f: use early to fingerprint WAF/CDN");
     expect(prompt).toContain("cvemap: use after identifying product names");
-    expect(prompt).toContain("Browser screenshot flow: use agent-browser");
+    expect(prompt).toContain("open_url tool: use only for static");
+    expect(prompt).toContain(
+      "agent-browser (cloud sandbox): use for authenticated",
+    );
   });
 
   it("advertises only the installed CVE mapper and SecLists path", async () => {

@@ -35,6 +35,13 @@ export function shouldUseAgentLongForAgent({
 }): boolean {
   if (mode !== "agent") return false;
 
+  if (
+    process.env.NEXT_PUBLIC_PERSONAL_MODE === "true" ||
+    process.env.NEXT_PUBLIC_PERSONAL_IN_PROCESS_AGENT === "true"
+  ) {
+    return false;
+  }
+
   return !isLegacyDesktopAgentClient({ mode, isTauri, userAgent });
 }
 

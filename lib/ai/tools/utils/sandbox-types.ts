@@ -51,6 +51,14 @@ export function isE2BSandbox(sandbox: AnySandbox | null): sandbox is Sandbox {
 /**
  * Common sandbox interface that both E2B and CentrifugoSandbox implement
  */
+export interface FileTreeEntry {
+  name: string;
+  path: string;
+  type: "file" | "directory" | "symlink";
+  size: number;
+  mtime?: number;
+}
+
 export interface CommonSandboxInterface {
   commands: {
     run: (
@@ -71,6 +79,12 @@ export interface CommonSandboxInterface {
     read: (path: string) => Promise<string>;
     remove: (path: string) => Promise<void>;
     list: (path: string) => Promise<{ name: string }[]>;
+    /**
+     * List directory with file types and sizes.
+     * Additive helper for the File Explorer side panel; optional so existing
+     * sandbox implementations remain compatible.
+     */
+    listDetailed?: (path: string) => Promise<FileTreeEntry[]>;
   };
   getHost: (port: number) => string;
   close: () => Promise<void>;

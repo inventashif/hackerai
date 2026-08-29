@@ -109,10 +109,20 @@ export function deriveChatTimelineRows({
   seenToolGroupIds = EMPTY_TOOL_GROUP_IDS,
   restoredAgentMessageIds = EMPTY_MESSAGE_IDS,
 }: DeriveChatTimelineRowsOptions): ChatTimelineRow[] {
+  // Dedupe by id — Convex paginated query + useChat optimistic state can briefly
+  // contain the same message twice during streaming sync, which otherwise
+  // produces duplicate LegendList keys (work-header / work:part:0 / message).
+  const seenMessageIds = new Set<string>();
+  const dedupedMessages = messages.filter((m) => {
+    if (seenMessageIds.has(m.id)) return false;
+    seenMessageIds.add(m.id);
+    return true;
+  });
+
   const rows: ChatTimelineRow[] = [];
 
-  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
-    const message = messages[messageIndex];
+  for (let messageIndex = 0; messageIndex < dedupedMessages.length; messageIndex++) {
+    const message = dedupedMessages[messageIndex];
     const isAgentAssistant =
       message.role === "assistant" && message.metadata?.mode === "agent";
 
@@ -210,7 +220,7 @@ export function deriveChatTimelineRows({
               isTiming &&
               canAnimateNewToolGroups &&
               !seenToolGroupIds.has(rowId),
-            isLastMessage: messageIndex === messages.length - 1,
+            isLastMessage: messageIndex === dedupedMessages.length - 1,
             summary: item.summary,
             terminalChunksByToolCallId: projection.terminalChunksByToolCallId,
           });
@@ -224,7 +234,7 @@ export function deriveChatTimelineRows({
           messageIndex,
           ...activity,
           id: `work:${message.id}:${activity.id}`,
-          isLastMessage: messageIndex === messages.length - 1,
+          isLastMessage: messageIndex === dedupedMessages.length - 1,
           keepLatestReasoningOpenDuringStreaming: true,
           suppressReasoningAutoOpen: restoredAgentMessageIds.has(message.id),
           deferReasoningCollapseUntilParent: hasFinalAnswer,

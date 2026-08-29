@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 
-const originalClientId = process.env.WORKOS_CLIENT_ID;
-const originalAuthDomain = process.env.WORKOS_AUTH_DOMAIN;
+const originalIssuer = process.env.PERSONAL_JWT_ISSUER;
+const originalJwks = process.env.PERSONAL_JWT_JWKS_URL;
+const originalAudience = process.env.PERSONAL_JWT_AUDIENCE;
 
 function restoreEnvironmentVariable(
-  name: "WORKOS_CLIENT_ID" | "WORKOS_AUTH_DOMAIN",
+  name: "PERSONAL_JWT_ISSUER" | "PERSONAL_JWT_JWKS_URL" | "PERSONAL_JWT_AUDIENCE",
   value: string | undefined,
 ) {
   if (value === undefined) {
@@ -15,92 +16,65 @@ function restoreEnvironmentVariable(
 }
 
 async function loadAuthConfig({
-  clientId,
-  authDomain,
+  issuer,
+  jwks,
+  audience,
 }: {
-  clientId?: string;
-  authDomain?: string;
+  issuer?: string;
+  jwks?: string;
+  audience?: string;
 }) {
   jest.resetModules();
-  restoreEnvironmentVariable("WORKOS_CLIENT_ID", clientId);
-  restoreEnvironmentVariable("WORKOS_AUTH_DOMAIN", authDomain);
+  restoreEnvironmentVariable("PERSONAL_JWT_ISSUER", issuer);
+  restoreEnvironmentVariable("PERSONAL_JWT_JWKS_URL", jwks);
+  restoreEnvironmentVariable("PERSONAL_JWT_AUDIENCE", audience);
   return (await import("../auth.config")).default;
 }
 
 afterEach(() => {
-  restoreEnvironmentVariable("WORKOS_CLIENT_ID", originalClientId);
-  restoreEnvironmentVariable("WORKOS_AUTH_DOMAIN", originalAuthDomain);
+  restoreEnvironmentVariable("PERSONAL_JWT_ISSUER", originalIssuer);
+  restoreEnvironmentVariable("PERSONAL_JWT_JWKS_URL", originalJwks);
+  restoreEnvironmentVariable("PERSONAL_JWT_AUDIENCE", originalAudience);
   jest.resetModules();
 });
 
-describe("Convex WorkOS auth configuration", () => {
-  it("leaves providers empty when WORKOS_CLIENT_ID is unavailable", async () => {
+describe("Convex personal auth configuration", () => {
+  it("uses the personal JWT provider", async () => {
     const authConfig = await loadAuthConfig({
-      authDomain: "not a valid domain",
-    });
-
-    expect(authConfig.providers).toEqual([]);
-  });
-
-  it("uses WorkOS's standard domain when configured", async () => {
-    const authConfig = await loadAuthConfig({
-      clientId: "client_test",
-      authDomain: "api.workos.com",
+      issuer: "http://localhost:3000",
+      jwks: "http://127.0.0.1:3000/.well-known/jwks.json",
+      audience: "hackerai-personal",
     });
 
     expect(authConfig.providers).toEqual([
       {
         type: "customJwt",
-        issuer: "https://api.workos.com/user_management/client_test",
+        applicationID: "hackerai-personal",
+        issuer: "http://localhost:3000",
         algorithm: "RS256",
-        jwks: "https://api.workos.com/sso/jwks/client_test",
+        jwks: "http://127.0.0.1:3000/.well-known/jwks.json",
       },
     ]);
   });
 
-  it("uses a configured custom auth domain", async () => {
+  it("defaults the audience when it is omitted", async () => {
     const authConfig = await loadAuthConfig({
-      clientId: "client_test",
-      authDomain: "auth.hackerai.co",
+      issuer: "http://localhost:3000",
+      jwks: "http://127.0.0.1:3000/.well-known/jwks.json",
     });
 
-    expect(authConfig.providers).toEqual([
-      {
-        type: "customJwt",
-        issuer: "https://auth.hackerai.co/user_management/client_test",
-        algorithm: "RS256",
-        jwks: "https://auth.hackerai.co/sso/jwks/client_test",
-      },
-    ]);
-  });
-
-  it("normalizes an HTTPS origin with trailing slashes", async () => {
-    const authConfig = await loadAuthConfig({
-      clientId: "client_test",
-      authDomain: " https://auth.hackerai.co/// ",
+    expect(authConfig.providers[0]).toMatchObject({
+      applicationID: "hackerai-personal",
     });
-
-    expect(authConfig.providers).toEqual([
-      {
-        type: "customJwt",
-        issuer: "https://auth.hackerai.co/user_management/client_test",
-        algorithm: "RS256",
-        jwks: "https://auth.hackerai.co/sso/jwks/client_test",
-      },
-    ]);
   });
 
-  it.each([undefined, "", "http://auth.hackerai.co", "auth.hackerai.co/path"])(
-    "rejects a missing or invalid auth domain: %s",
-    async (authDomain) => {
-      await expect(
-        loadAuthConfig({
-          clientId: "client_test",
-          authDomain,
-        }),
-      ).rejects.toThrow(
-        "WORKOS_AUTH_DOMAIN must be a hostname or HTTPS origin without a path",
-      );
-    },
-  );
+  it("rejects missing issuer or JWKS URL", async () => {
+    await expect(
+      loadAuthConfig({
+        issuer: "http://localhost:3000",
+      }),
+    ).rejects.toThrow(
+      "PERSONAL_JWT_ISSUER and PERSONAL_JWT_JWKS_URL must be set",
+    );
+  });
 });

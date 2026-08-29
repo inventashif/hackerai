@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { cookies, headers } from "next/headers";
 import { withAuth } from "@workos-inc/authkit-nextjs";
+import { isPersonalMode } from "@/lib/auth/personal-mode";
 import "./globals.css";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -34,7 +35,7 @@ const APP_NAME = "HackerAI";
 const APP_DEFAULT_TITLE = "HackerAI - AI-Powered Penetration Testing Assistant";
 const APP_TITLE_TEMPLATE = "%s | HackerAI";
 const APP_DESCRIPTION =
-  "HackerAI is an AI pentesting assistant that helps you scan targets, exploit vulnerabilities, analyze findings, and write reports faster.";
+  "HackerAI is an AI pentesting assistant that helps you scan targets, exploit vulnerabilities, and write reports faster.";
 
 export const metadata: Metadata = {
   applicationName: APP_NAME,
@@ -99,6 +100,13 @@ export const metadata: Metadata = {
 };
 
 async function getInitialAuth() {
+  if (isPersonalMode()) {
+    const { withAuth: withPersonalAuth } = await import(
+      "@/lib/auth/personal-authkit"
+    );
+    return resolveClientInitialAuth(withPersonalAuth as typeof withAuth);
+  }
+
   const requestHeaders = await headers();
 
   // Static public pages are prerendered without proxy-injected AuthKit headers.

@@ -259,6 +259,61 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       { _id: "note-user", user_id: userId, note_id: "note-1" },
       { _id: "note-other", user_id: otherUserId, note_id: "note-2" },
     ],
+    // Seeded so the USER_DELETION_TABLE_POLICY.delete assertion is not
+    // vacuous: `tables[table] ?? []` makes `.some()` return false on an
+    // unseeded table, which would pass even if deletion were broken.
+    memory_nodes: [
+      {
+        _id: "memory-node-user",
+        user_id: userId,
+        node_id: "mn1",
+        path: "mn1",
+        depth: 0,
+        kind: "finding",
+        title: "IDOR on /api/users",
+        content: "Tenant B token reads tenant A records",
+        tags: ["idor"],
+        tokens: 12,
+        status: "active",
+        created_at: 1,
+        updated_at: 1,
+      },
+      {
+        _id: "memory-node-other",
+        user_id: otherUserId,
+        node_id: "mn2",
+        path: "mn2",
+        depth: 0,
+        kind: "fact",
+        title: "Other user's node",
+        content: "Must survive deletion of userId",
+        tags: [],
+        tokens: 8,
+        status: "active",
+        created_at: 1,
+        updated_at: 1,
+      },
+    ],
+    memory_edges: [
+      {
+        _id: "memory-edge-user",
+        user_id: userId,
+        edge_id: "me1",
+        from_node_id: "mn1",
+        to_node_id: "mn1b",
+        relation: "evidence_for",
+        created_at: 1,
+      },
+      {
+        _id: "memory-edge-other",
+        user_id: otherUserId,
+        edge_id: "me2",
+        from_node_id: "mn2",
+        to_node_id: "mn2b",
+        relation: "relates_to",
+        created_at: 1,
+      },
+    ],
     user_customization: [
       { _id: "custom-user", user_id: userId, updated_at: 1 },
       { _id: "custom-other", user_id: otherUserId, updated_at: 1 },
@@ -575,6 +630,16 @@ describe("userDeletion", () => {
     expect(row(tables, "files", "file-other")).toBeTruthy();
     expect(row(tables, "temp_streams", "temp-stream-user")).toBeUndefined();
     expect(row(tables, "temp_streams", "temp-stream-other")).toBeTruthy();
+
+    // Structured memory holds persistent user knowledge (findings, targets,
+    // methodology) and must be destroyed with the account. These are explicit
+    // rather than relying on the policy loop, which cannot distinguish
+    // "deleted" from "never seeded".
+    expect(row(tables, "memory_nodes", "memory-node-user")).toBeUndefined();
+    expect(row(tables, "memory_edges", "memory-edge-user")).toBeUndefined();
+    // Another user's memory must survive.
+    expect(row(tables, "memory_nodes", "memory-node-other")).toBeTruthy();
+    expect(row(tables, "memory_edges", "memory-edge-other")).toBeTruthy();
 
     expect(row(tables, "cancellation_reasons", "cancel-user")).toMatchObject({
       user_id: DELETED_USER_ID,

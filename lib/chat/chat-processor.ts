@@ -14,9 +14,11 @@ import {
 } from "@/lib/utils/file-utils";
 import {
   isAnthropicModel,
+  isKnownZenFreeModelId,
   resolveTierToProviderKey,
   type ModelName,
 } from "@/lib/ai/providers";
+import { isKiroModel, isZenModel } from "@/types/chat";
 import {
   ABORTED_TOOL_ERROR_TEXT,
   getIncompleteToolErrorText,
@@ -25,10 +27,12 @@ import {
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 /**
  * Get maximum steps allowed for a request.
- * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
+ * Agent mode: no hard step limit — runs until goal complete (safety ceiling 5000
+ * to prevent runaway loops from exhausting resources). Ask mode: 15 steps.
+ * Remaining agent limits: token exhaustion, doom-loop detection, elapsed timeout.
  */
 export const getMaxStepsForUser = (mode: ChatMode): number => {
-  if (isAgentMode(mode)) return 500;
+  if (isAgentMode(mode)) return 5000;
   return 15;
 };
 
@@ -83,8 +87,17 @@ export function selectModel(
       ? "ask-model-free"
       : paidAskMediaModel;
 
-  // Free users always route through the auto router; paid users may pick an
-  // entitled tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
+  // Direct Zen / Kiro model selection bypasses tier logic.
+  if (allowedSelectedModel && isZenModel(allowedSelectedModel)) {
+    return allowedSelectedModel as unknown as ModelName;
+  }
+  if (allowedSelectedModel && isKiroModel(allowedSelectedModel)) {
+    if (subscription === "free") return autoModel;
+    return allowedSelectedModel as unknown as ModelName;
+  }
+
+  // Free users always route through the auto router for tier models; paid users
+  // may pick an entitled tier explicitly. Zen free models are handled above.
   if (
     !allowedSelectedModel ||
     allowedSelectedModel === "auto" ||

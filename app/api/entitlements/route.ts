@@ -8,10 +8,24 @@ import {
   parseEntitlements,
   resolveSubscriptionTier,
 } from "@/lib/auth/entitlements";
+import { isPersonalMode } from "@/lib/auth/personal-mode";
 import { workos } from "@/app/api/workos";
 
 export async function GET(req: NextRequest) {
   try {
+    if (isPersonalMode()) {
+      const { authkit } = await import("@/lib/auth/personal-authkit");
+      const { session } = await authkit(req);
+      if (!session?.user) {
+        return json({ error: "No session cookie found" }, { status: 401 });
+      }
+      const allEntitlements = parseEntitlements(session.entitlements);
+      return json({
+        entitlements: allEntitlements,
+        subscription: resolveSubscriptionTier(allEntitlements),
+      });
+    }
+
     // Get the session cookie
     const sessionCookie = req.cookies.get("wos-session")?.value;
 

@@ -482,8 +482,8 @@ describe("selectModel", () => {
 // getMaxStepsForUser - Step limits by mode
 // ==========================================================================
 describe("getMaxStepsForUser", () => {
-  it("should return 500 steps for agent mode", () => {
-    expect(getMaxStepsForUser("agent")).toBe(500);
+  it("should return 5000 steps for agent mode (no hard limit, runs till goal)", () => {
+    expect(getMaxStepsForUser("agent")).toBe(5000);
   });
 
   it("should return 15 steps for ask mode", () => {

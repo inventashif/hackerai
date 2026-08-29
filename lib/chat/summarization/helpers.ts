@@ -14,6 +14,7 @@ import {
   safeCountTokens,
 } from "@/lib/token-utils";
 import { saveChatSummary } from "@/lib/db/actions";
+import { recordCompactionMemory } from "@/lib/db/memory-actions";
 import { SubscriptionTier, ChatMode, Todo } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
@@ -877,16 +878,92 @@ export const buildSummaryMessage = (
   };
 };
 
+/**
+ * Persist a summary and return its id.
+ *
+ * Returns null when nothing was written — no chatId, the Convex mutation
+ * skipped the write (chat deleted, cutoff message missing, stale summary), or
+ * the save threw. Failures stay non-fatal because losing a summary row must not
+ * fail the turn; callers treat null as "skip anything derived from this
+ * summary" rather than as an error.
+ */
+/**
+ * Record a compaction in structured memory, so compacted context survives
+ * permanently instead of only in `chat_summaries`.
+ *
+ * This matters because summary storage is lossy by design: each compaction
+ * deletes the previous summary row, and the `previous_summaries` chain is
+ * capped at 10. The sandbox transcript that used to backstop it dies with the
+ * sandbox, leaving the path in the summary text unresolvable.
+ *
+ * Deliberately best-effort and never throwing. Memory bookkeeping must not fail
+ * a turn: the summary itself is already persisted by this point, so a failure
+ * here degrades to today's behavior rather than losing the compaction.
+ */
+export const recordCompactionMemoryLink = async ({
+  userId,
+  chatId,
+  summaryText,
+  summaryId,
+  cutoffMessageId,
+  mode,
+}: {
+  userId?: string;
+  chatId: string | null;
+  summaryText: string;
+  summaryId: Id<"chat_summaries"> | null;
+  cutoffMessageId: string;
+  mode: ChatMode;
+}): Promise<void> => {
+  // No userId means either an unauthenticated path or the user opted out of
+  // notes/memory. Both correctly skip writing persistent knowledge.
+  if (!userId || !chatId) return;
+
+  try {
+    const result = await recordCompactionMemory({
+      userId,
+      chatId,
+      summaryText,
+      ...(summaryId ? { summaryId } : {}),
+      cutoffMessageId,
+    });
+
+    console.info(
+      JSON.stringify({
+        level: result.success ? "info" : "warn",
+        event: "compaction_memory_linked",
+        service: "chat-handler",
+        timestamp: new Date().toISOString(),
+        chat_id: chatId,
+        mode,
+        success: result.success,
+        node_id: result.node_id,
+        folder_id: result.folder_id,
+        // Present when this compaction was chained to a prior one.
+        linked_to: result.linked_to,
+        excerpt_truncated: result.truncated,
+        // Never log summary text: it contains user conversation content.
+        error: result.error,
+      }),
+    );
+  } catch (error) {
+    console.warn(
+      "[Summarization] Failed to link compaction to memory:",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+};
+
 export const persistSummary = async (
   chatId: string | null,
   summaryText: string,
   cutoffMessageId: string,
   metadata?: SummaryPersistenceMetadata,
-): Promise<void> => {
-  if (!chatId) return;
+): Promise<Id<"chat_summaries"> | null> => {
+  if (!chatId) return null;
 
   try {
-    await saveChatSummary({
+    return await saveChatSummary({
       chatId,
       summaryText,
       summaryUpToMessageId: cutoffMessageId,
@@ -894,5 +971,6 @@ export const persistSummary = async (
     });
   } catch (error) {
     console.error("[Summarization] Failed to save summary:", error);
+    return null;
   }
 };

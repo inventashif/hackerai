@@ -46,7 +46,9 @@ import {
 } from "@/lib/chat/summarization";
 import type { ProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getNotes } from "@/lib/db/actions";
+import { getMemoryContext } from "@/lib/db/memory-actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
+import { generateMemorySection } from "@/lib/system-prompt/memory";
 import { logger } from "@/lib/logger";
 import { UsageTracker } from "@/lib/usage-tracker";
 import { ChatSDKError } from "@/lib/errors";
@@ -384,6 +386,8 @@ export async function runSummarizationStep(options: {
   modelMessages?: ModelMessage[];
   transcriptMessages?: UIMessage[];
   providerPromptPressure?: ProviderPromptPressure | null;
+  /** Owner of the chat; enables durable memory linkage for this compaction. */
+  userId?: string;
 }): Promise<SummarizationStepResult> {
   const {
     summarizationAttempted,
@@ -410,6 +414,7 @@ export async function runSummarizationStep(options: {
     transcriptMessages: options.transcriptMessages,
     maxTokensOverride: options.ctxMaxTokens,
     providerPromptPressure: options.providerPromptPressure,
+    userId: options.userId,
   });
 
   if (!needsSummarization) {
@@ -1012,6 +1017,54 @@ export async function injectNotesIntoMessages(
     return appendSystemReminderToLastUserMessage(messages, notesContent);
   } catch (error) {
     logger.warn("Failed to fetch notes, continuing without them", {
+      userId: opts.userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return messages;
+  }
+}
+
+/**
+ * Inject a partial view of structured memory into the last user message.
+ *
+ * Goes into messages rather than the system prompt for the same reason notes
+ * do: the system prompt must stay byte-stable for provider prompt caching.
+ *
+ * Gated by the same flag as notes (`areNotesEnabled`) — both are persistent
+ * cross-session user knowledge governed by one plan rule and one opt-out.
+ *
+ * Failure is non-fatal. Memory is an enhancement, so a Convex hiccup degrades
+ * to a normal turn rather than failing the request.
+ *
+ * Known limitation: this injects once at the start of a turn. Unlike notes,
+ * which have `refreshNotesInModelMessages` to re-read after mid-stream writes,
+ * nodes the agent creates during a long run are not re-injected. The agent sees
+ * its own writes through tool results, so this mainly affects a stale <memory>
+ * block persisting across many steps.
+ */
+export async function injectMemoryIntoMessages(
+  messages: UIMessage[],
+  opts: {
+    userId: string;
+    subscription: SubscriptionTier;
+    shouldIncludeMemory: boolean;
+  },
+): Promise<UIMessage[]> {
+  if (!opts.shouldIncludeMemory) return messages;
+
+  try {
+    const context = await getMemoryContext({
+      userId: opts.userId,
+      subscription: opts.subscription,
+    });
+    const memoryContent = generateMemorySection(context.nodes, {
+      truncated: context.truncated,
+    });
+    if (!memoryContent) return messages;
+
+    return appendSystemReminderToLastUserMessage(messages, memoryContent);
+  } catch (error) {
+    logger.warn("Failed to fetch memory, continuing without it", {
       userId: opts.userId,
       error: error instanceof Error ? error.message : String(error),
     });

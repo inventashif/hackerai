@@ -1,0 +1,83 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.selfhost
+    depends_on:
+      - convex
+      - centrifugo
+    volumes:
+      - ./data/local-storage:/app/.local-storage
+      - workspace:/home/user/workspace
+      - reports:/home/user/reports
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  convex:
+    image: ghcr.io/get-convex/convex-backend:latest
+    ports:
+      - "3210:3210"
+      - "3211:3211"
+    environment:
+      - CONVEX_BACKEND_CONFIG=${CONVEX_BACKEND_CONFIG:-}
+    volumes:
+      - convex-data:/convex/data
+      - ./convex:/convex/convex:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3210/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    profiles: ["local-convex"]
+
+  centrifugo:
+    image: centrifugo/centrifugo:v5
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./docker/centrifugo/config.json:/centrifugo/config.json:ro
+    command: ["centrifugo", "-c", "/centrifugo/config.json"]
+    environment:
+      - CENTRIFUGO_TOKEN_HMAC_SECRET_KEY=${CENTRIFUGO_TOKEN_HMAC_SECRET_KEY}
+      - CENTRIFUGO_API_KEY=${CENTRIFUGO_API_KEY}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  sandbox:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+      - SYS_PTRACE
+    volumes:
+      - workspace:/home/user/workspace
+      - reports:/home/user/reports
+      - data:/home/user/data
+    environment:
+      - CENTRIFUGO_WS_URL=ws://centrifugo:8000/connection/websocket
+      - CENTRIFUGO_TOKEN_HMAC_SECRET_KEY=${CENTRIFUGO_TOKEN_HMAC_SECRET_KEY}
+    depends_on:
+      - centrifugo
+    restart: "no"
+    profiles: ["sandbox"]
+
+volumes:
+  workspace:
+  reports:
+  data:
+  convex-data:

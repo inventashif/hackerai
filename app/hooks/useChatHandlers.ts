@@ -41,6 +41,7 @@ import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 import { v4 as uuidv4 } from "uuid";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { readReasoningTier } from "@/lib/utils/client-storage";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -577,6 +578,7 @@ export const useChatHandlers = ({
               agentPermissionMode: agentPermissionModeRef.current,
 
               selectedModel: requestSelectedModel,
+              reasoningTier: readReasoningTier() ?? undefined,
             },
           },
         ),
@@ -595,6 +597,7 @@ export const useChatHandlers = ({
               agentPermissionMode: agentPermissionModeRef.current,
 
               selectedModel: requestSelectedModel,
+              reasoningTier: readReasoningTier() ?? undefined,
             },
           },
         ),
@@ -723,6 +726,62 @@ export const useChatHandlers = ({
     }
     const agentRunRequestId = uuidv4();
 
+    // Check if any assistant message had any tool invocation (progress).
+    // If it did, we should CONTINUE from there, not restart from the prompt.
+    // Preserve the agent's exploration state for long-running tasks, even if
+    // the last tool's output hasn't arrived yet (e.g., 429 mid-stream).
+    const hasProgress = messages.some(
+      (m) =>
+        m.role === "assistant" &&
+        (m.parts as any[])?.some((p) => p.type?.startsWith("tool-") && p.input != null),
+    );
+
+    if (hasProgress) {
+      // Continue from where we left — keep the assistant's tool history as context.
+      // First, persist the partial assistant message to Convex so the next
+      // backend fetch includes it (otherwise getMessagesByChatId would miss
+      // progress that only lives in client state). Then send a hidden
+      // continue prompt that resumes the agent loop.
+      const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+      if (lastAssistant?.parts) {
+        try {
+          await saveAssistantMessage({
+            id: lastAssistant.id,
+            chatId,
+            role: "assistant",
+            parts: getConvexSafeParts(lastAssistant.parts as any),
+            mode: chatModeRef.current,
+          } as any);
+        } catch (e) {
+          console.warn("[retry-continue] failed to persist partial assistant", e);
+        }
+      }
+      const { readReasoningTier } = await import("@/lib/utils/client-storage");
+      const reasoningTier = readReasoningTier() ?? undefined;
+      runChatAction("retry-continue response", () =>
+        sendMessage(
+          {
+            text: "Continue from where you left off. The previous attempt encountered an error — resume your work, factoring in all tool outputs already produced. Do not restart from the original prompt.",
+            metadata: { isAutoContinue: true },
+          },
+          {
+            body: {
+              mode: chatModeRef.current,
+              isAutoContinue: true,
+              todos,
+              sandboxPreference,
+              agentPermissionMode: agentPermissionModeRef.current,
+              selectedModel: requestSelectedModel,
+              reasoningTier,
+              ...(options.limitRescue && { limitRescue: options.limitRescue }),
+            },
+          },
+        ),
+      );
+      return;
+    }
+
+    // No progress — safe to regenerate from the original prompt (existing behavior).
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
     const cleanedTodos = removeTodosBySourceMessages(
       todos,
@@ -764,6 +823,14 @@ export const useChatHandlers = ({
           sandboxPreference,
           agentPermissionMode: agentPermissionModeRef.current,
           selectedModel: requestSelectedModel,
+          reasoningTier: (() => {
+            try {
+              const { readReasoningTier } = require("@/lib/utils/client-storage");
+              return readReasoningTier() ?? undefined;
+            } catch {
+              return undefined;
+            }
+          })(),
           ...(options.limitRescue && { limitRescue: options.limitRescue }),
         },
       }),

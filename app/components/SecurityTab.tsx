@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 const SecurityTab = () => {
+  const personalMode = process.env.NEXT_PUBLIC_PERSONAL_MODE === "true";
   const { getAccessToken } = useAccessToken();
   const getWidgetAccessToken = useCallback(async () => {
     const token = await getAccessToken();
@@ -52,6 +53,12 @@ const SecurityTab = () => {
 
   return (
     <div className="space-y-6">
+      {personalMode ? (
+        <div className="overflow-hidden rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+          Personal mode uses a local account on this machine. Cloud login,
+          password, and device-session management are not used.
+        </div>
+      ) : (
       <div data-testid="workos-user-security">
         <WorkOsWidgets
           style={{ blockSize: "auto", minBlockSize: "auto" }}
@@ -66,6 +73,7 @@ const SecurityTab = () => {
           <UserSecurity authToken={getWidgetAccessToken} />
         </WorkOsWidgets>
       </div>
+      )}
 
       <div
         data-testid="security-session-actions"

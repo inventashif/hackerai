@@ -1018,6 +1018,13 @@ export async function createAgentStream(
               ),
               transcriptMessages: state.transcriptSourceMessages,
               providerPromptPressure,
+              // Passing userId is what enables durable memory linkage for this
+              // compaction. Withheld when the user has opted out of notes and
+              // memory: compaction must not write persistent user knowledge
+              // that they explicitly disabled in Settings.
+              userId: ctx.noteInjectionOpts.shouldIncludeNotes
+                ? ctx.userId
+                : undefined,
             });
 
             if (result.summarizationAttempted) {

@@ -1,7 +1,18 @@
 import { customProvider } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { createOpenAI } from "@ai-sdk/openai";
+import { randomBytes } from "node:crypto";
 import type { ChatMode, SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
+import { isOpenCodeZenEnabled } from "@/lib/auth/personal-mode";
+import { createKiroProvider } from "./providers/kiro";
+import {
+  getKiroModelName,
+  isKiroModelKey,
+  KIRO_DEFAULT_CUTOFF,
+  KIRO_MODEL_KEYS,
+  KIRO_MODELS,
+} from "./providers/kiro-models";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -177,8 +188,6 @@ const openrouter = createOpenRouter({
   headers: openrouterAttributionHeaders,
 });
 
-type OpenRouterInstance = typeof openrouter;
-
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
@@ -190,7 +199,111 @@ export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
+
+// Known Zen free models (fallback when API unavailable)
+export const KNOWN_ZEN_FREE_MODELS = [
+  "deepseek-v4-flash-free",
+  "hy3-free",
+  "laguna-s-2.1-free",
+  "mimo-v2.5-free",
+  "muse-spark-1.2-contributor-free",
+  "nemotron-3-ultra-free",
+  "nemotron-3.5-lightning-free",
+  "x-preview-f-free",
+  "big-pickle",
+] as const;
+
+export function isKnownZenFreeModelId(value: string): boolean {
+  return (
+    value.endsWith("-free") ||
+    (KNOWN_ZEN_FREE_MODELS as readonly string[]).includes(value)
+  );
+}
+
+export function isZenModelId(value: string): boolean {
+  return isKnownZenFreeModelId(value);
+}
+
 const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
+const DEFAULT_ZEN_MODEL = "deepseek-v4-flash-free";
+
+const resolveZenModelId = (openRouterSlug: string): string => {
+  // Direct Zen free model IDs pass through unchanged (for explicit user selection)
+  if (isKnownZenFreeModelId(openRouterSlug)) {
+    return openRouterSlug;
+  }
+  const configured = process.env.OPENCODE_ZEN_MODEL?.trim();
+  const standard =
+    process.env.OPENCODE_ZEN_MODEL_STANDARD?.trim() ||
+    configured ||
+    DEFAULT_ZEN_MODEL;
+  const pro =
+    process.env.OPENCODE_ZEN_MODEL_PRO?.trim() || configured || DEFAULT_ZEN_MODEL;
+  const max =
+    process.env.OPENCODE_ZEN_MODEL_MAX?.trim() || configured || DEFAULT_ZEN_MODEL;
+  const vision =
+    process.env.OPENCODE_ZEN_MODEL_VISION?.trim() || "mimo-v2.5-free";
+
+  if (openRouterSlug === AUXILIARY_VISION_SLUG) return vision;
+  if (
+    openRouterSlug === DEEPSEEK_V4_PRO_SLUG ||
+    openRouterSlug === DEEPSEEK_V4_PRO_0813_SLUG
+  ) {
+    return pro;
+  }
+  if (
+    openRouterSlug === KIMI_K3_SLUG ||
+    openRouterSlug === GROK_4_6_SLUG ||
+    openRouterSlug === GROK_4_5_SLUG ||
+    openRouterSlug === GLM_5_2_SLUG
+  ) {
+    return max;
+  }
+  return standard;
+};
+
+type LanguageModelFactory = (slug: string) => unknown;
+
+// The OpenCode Zen anonymous free tier rejects requests unless they mimic the
+// official CLI: `Authorization: Bearer public` plus x-opencode-* session
+// headers. Without these, the gateway answers 429 FreeUsageLimitError even
+// though the anonymous tier is enabled.
+const zenPatchFetch: typeof fetch = async (url, init) => {
+  const headers = new Headers(init?.headers);
+  const auth = headers.get("authorization");
+  if (!auth || auth === "Bearer " || auth === "Bearer") {
+    headers.set("Authorization", "Bearer public");
+  }
+  if (!headers.has("x-opencode-client")) headers.set("x-opencode-client", "cli");
+  if (!headers.has("x-opencode-project")) headers.set("x-opencode-project", "global");
+  if (!headers.has("x-opencode-request")) {
+    headers.set("x-opencode-request", `msg_${randomBytes(16).toString("hex")}`);
+  }
+  if (!headers.has("x-opencode-session")) {
+    headers.set("x-opencode-session", `ses_${randomBytes(16).toString("hex")}`);
+  }
+  if (!headers.has("user-agent")) {
+    headers.set("User-Agent", "opencode/1.15.0 ai-sdk/provider-utils/4.0.23");
+  }
+  return globalThis.fetch(url, { ...init, headers });
+};
+
+const createLanguageModelFactory = (): LanguageModelFactory => {
+  if (!isOpenCodeZenEnabled()) {
+    return (slug: string) => openrouter(slug);
+  }
+
+  const zen = createOpenAI({
+    name: "opencode-zen",
+    apiKey: process.env.OPENCODE_ZEN_API_KEY,
+    baseURL:
+      process.env.OPENCODE_ZEN_BASE_URL?.trim() || "https://opencode.ai/zen/v1",
+    fetch: zenPatchFetch,
+  });
+
+  return (slug: string) =>
+    zen.chat(resolveZenModelId(slug) as Parameters<typeof zen.chat>[0]);
+};
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
@@ -200,7 +313,7 @@ export const getOpenRouterProviderRoutingForModel = (
     : undefined;
 
 const buildProviderMap = (
-  or: OpenRouterInstance,
+  or: LanguageModelFactory,
   freeAskDeepSeekSlug = DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
   freeAgentDeepSeekSlug = DEEPSEEK_V4_FLASH_SLUG,
 ) =>
@@ -235,7 +348,31 @@ const buildProviderMap = (
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
   }) as Record<string, any>;
 
-const baseProviders = buildProviderMap(openrouter);
+// Add direct Zen free model entries for explicit user selection (e.g., via ModelSelector)
+const buildZenFreeProviders = (or: LanguageModelFactory) =>
+  Object.fromEntries(
+    KNOWN_ZEN_FREE_MODELS.map((id) => [id, or(id)]),
+  ) as Record<string, any>;
+
+const kiroFactory = createKiroProvider();
+const kiroProviders = Object.fromEntries(
+  Object.keys(KIRO_MODELS).map((k) => [k, kiroFactory(k)]),
+) as Record<string, any>;
+
+const baseProviders = {
+  ...buildProviderMap(createLanguageModelFactory()),
+  ...buildZenFreeProviders(createLanguageModelFactory()),
+  ...kiroProviders,
+} as Record<string, any>;
+
+// Also handle any future free models dynamically (e.g., new -free suffix)
+const zenFreeModelFallback = (modelName: string) => {
+  if (isKnownZenFreeModelId(modelName) && !(modelName in baseProviders)) {
+    const or = createLanguageModelFactory();
+    return or(modelName);
+  }
+  return null;
+};
 
 export type ModelName = keyof typeof baseProviders;
 
@@ -255,6 +392,21 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "title-generator-model": "May 2025",
   "agent-auto-review-model": "July 2026",
   "auxiliary-vision-model": "January 2025",
+  // Zen free models
+  "deepseek-v4-flash-free": "July 2026",
+  "hy3-free": "August 2026",
+  "laguna-s-2.1-free": "August 2026",
+  "mimo-v2.5-free": "January 2025",
+  "muse-spark-1.2-contributor-free": "August 2026",
+  "nemotron-3-ultra-free": "August 2026",
+  "nemotron-3.5-lightning-free": "August 2026",
+  "x-preview-f-free": "August 2026",
+  "big-pickle": "August 2026",
+  // Kiro models, derived from the catalog so that adding a model there (or
+  // picking up a new one from the gateway) stays in sync automatically.
+  ...Object.fromEntries(
+    KIRO_MODEL_KEYS.map((key) => [key, KIRO_DEFAULT_CUTOFF]),
+  ),
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -278,20 +430,61 @@ export const modelDisplayNames: Record<ModelName, string> &
   "title-generator-model": "DeepSeek V4 Flash",
   "agent-auto-review-model": "DeepSeek V4 Flash 0731",
   "auxiliary-vision-model": "Auxiliary vision model",
+  // Zen free models (display names for ModelSelector)
+  "deepseek-v4-flash-free": "DeepSeek V4 Flash (Free)",
+  "hy3-free": "Hy3 (Free)",
+  "laguna-s-2.1-free": "Laguna S 2.1 (Free)",
+  "mimo-v2.5-free": "MiMo V2.5 (Free)",
+  "muse-spark-1.2-contributor-free": "Muse Spark 1.2 (Free)",
+  "nemotron-3-ultra-free": "Nemotron 3 Ultra (Free)",
+  "nemotron-3.5-lightning-free": "Nemotron 3.5 Lightning (Free)",
+  "x-preview-f-free": "X Preview F (Free)",
+  "big-pickle": "Big Pickle (Free)",
+  // Kiro models, derived from the catalog (see `modelCutoffDates` above).
+  ...Object.fromEntries(
+    KIRO_MODEL_KEYS.map((key) => [key, getKiroModelName(key)]),
+  ),
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
-  return modelDisplayNames[modelName];
+  if (modelDisplayNames[modelName]) return modelDisplayNames[modelName];
+  // Gateway-only Kiro models absent from the static catalog get a derived label.
+  if (isKiroModelKey(modelName)) return getKiroModelName(modelName);
+  if (
+    isKnownZenFreeModelId(modelName) &&
+    (KNOWN_ZEN_FREE_MODELS as readonly string[]).includes(modelName)
+  ) {
+    return (
+      modelName
+        .split("-")
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ") + " (Free)"
+    );
+  }
+  return modelDisplayNames[modelName] ?? modelName;
 };
 
 export const getModelCutoffDate = (
   modelName: ModelName,
 ): string | undefined => {
+  if (modelCutoffDates[modelName]) return modelCutoffDates[modelName];
+  if ((KNOWN_ZEN_FREE_MODELS as readonly string[]).includes(modelName))
+    return "August 2026";
+  if (isKiroModelKey(modelName)) return KIRO_DEFAULT_CUTOFF;
   return modelCutoffDates[modelName];
 };
 
 export function isAnthropicModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
+  // Every model served by the Kiro Gateway is Bedrock Claude underneath:
+  // `GET /v1/models` reports `owned_by: "anthropic"` and description
+  // "Claude model via Kiro API" for all 19, and tool-call ids come back as
+  // `toolu_bdrk_*`. Their public names do not all contain "claude"
+  // (`kiro-gpt-5.6-sol`, `kiro-glm-5`, `kiro-minimax-m2.5`, `kiro-auto`), so a
+  // substring match alone routed them down the generic path — skipping
+  // Anthropic prompt repair (which drops orphaned trailing tool_use blocks
+  // that Anthropic rejects) and provider cache breakpoints.
+  if (isKiroModelKey(normalized)) return true;
   return normalized.startsWith("anthropic/") || normalized.includes("claude");
 }
 
@@ -364,6 +557,14 @@ export function resolveTierToProviderKey(
   _mode: ChatMode,
 ): ModelName | null {
   if (tier === "auto") return null;
+  // Direct Zen free model selection (e.g., from ModelSelector) passes through
+  if (isKnownZenFreeModelId(tier)) {
+    return tier as ModelName;
+  }
+  // Direct Kiro gateway model selection also bypasses tier mapping.
+  if (typeof tier === "string" && isKiroModelKey(tier)) {
+    return tier as ModelName;
+  }
   switch (tier) {
     case "hackerai-standard":
       return "model-deepseek-v4-flash-0731";
@@ -372,10 +573,35 @@ export function resolveTierToProviderKey(
     case "hackerai-max":
       return "model-grok-4.6";
   }
+  // Fallback for any future zen -free ids not in static list
+  if (typeof tier === "string" && tier.endsWith("-free")) {
+    return tier as ModelName;
+  }
+  return null;
 }
 
-export const myProvider = customProvider({
+// Wrap baseProviders to handle dynamic Zen free models not in the static map
+const baseMyProvider = customProvider({
   languageModels: baseProviders,
 });
+
+export const myProvider = {
+  ...baseMyProvider,
+  languageModel: (modelId: string) => {
+    if (modelId in baseProviders) {
+      return (baseMyProvider as any).languageModel(modelId);
+    }
+    if (isKnownZenFreeModelId(modelId)) {
+      const or = createLanguageModelFactory();
+      return or(modelId);
+    }
+    // Kiro models the gateway exposes but the static catalog doesn't list yet.
+    if (isKiroModelKey(modelId)) {
+      return kiroFactory(modelId);
+    }
+    // Fallback to base provider (will throw if not found, preserving original behavior)
+    return (baseMyProvider as any).languageModel(modelId);
+  },
+} as typeof baseMyProvider;
 
 export const createTrackedProvider = () => myProvider;

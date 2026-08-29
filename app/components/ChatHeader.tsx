@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { PanelLeft, Sparkle, SquarePen, Split, Share } from "lucide-react";
+import { PanelLeft, Sparkle, SquarePen, Split, Share, Ticket } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useRouter } from "next/navigation";
@@ -15,6 +15,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ShareDialog } from "./ShareDialog";
+import { RedeemCodeDialog } from "./RedeemCodeDialog";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 import { formatTaskTitle } from "@/app/utils/task-ui-copy";
@@ -131,6 +132,16 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   <Sparkle className="mr-2 h-4 w-4 fill-current" />
                   Upgrade plan
                 </Button>
+              )}
+              {user && !loading && (
+                <RedeemCodeDialog
+                  trigger={
+                    <Button variant="ghost" size="sm" className="rounded-full text-xs">
+                      <Ticket className="mr-1 h-3 w-3" />
+                      Redeem code
+                    </Button>
+                  }
+                />
               )}
             </div>
             <div className="flex flex-1 gap-2 justify-between items-center">

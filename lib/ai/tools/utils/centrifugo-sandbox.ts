@@ -349,7 +349,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 - Network operations (direct access to host network)
 - Process management (can affect host system)${projectContext}
 
-Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
+Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks. If agent-browser is available, use: \`agent-browser open <url>\` → \`agent-browser snapshot -i\` → interact via refs (\`agent-browser click @eN\`, \`agent-browser fill @eN "value"\`) → \`agent-browser screenshot\` for visual confirmation.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
 
     return null;
@@ -1664,6 +1664,98 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           }
           return { name: name.trim() };
         });
+    },
+
+    listDetailed: async (
+      rawPath: string = "/home/user",
+    ): Promise<
+      Array<{
+        name: string;
+        path: string;
+        type: "file" | "directory" | "symlink";
+        size: number;
+        mtime?: number;
+      }>
+    > => {
+      if (this.supportsNativeFileRelay()) {
+        // Native relay: reuse existing list and stat via file_stat messages
+        const flat = await this.listNativeFiles(rawPath);
+        const entries: Array<{
+          name: string;
+          path: string;
+          type: "file" | "directory" | "symlink";
+          size: number;
+          mtime?: number;
+        }> = [];
+        for (const { name } of flat) {
+          const base = name.split("/").pop() ?? name;
+          // Native file_list currently returns only files; treat all as files
+          entries.push({ name: base, path: name, type: "file", size: 0 });
+        }
+        return entries;
+      }
+
+      const { useBash, path, escapeValue } = await this.shellContext(rawPath);
+      const dirName = path.split(/[/\\]/).pop() || path;
+
+      // cmd.exe: fall back to dir /b listing (no stat on Windows)
+      if (!useBash) {
+        const flat = await (
+          this.files as { list: (p: string) => Promise<{ name: string }[]> }
+        ).list(rawPath);
+        return flat.map(({ name }) => {
+          const base = name.split(/[/\\]/).pop() ?? name;
+          return { name: base, path: name, type: "file" as const, size: 0 };
+        });
+      }
+
+      // Bash/Linux: use Python for robust listing (handles spaces, unicode, symlinks)
+      const py = [
+        "import os, json, stat as st",
+        `root = ${JSON.stringify(path)}`,
+        "out=[]",
+        "try:",
+        "  entries=os.listdir(root)",
+        "except Exception as e:",
+        "  print(json.dumps({'error': str(e)}))",
+        "  raise SystemExit(0)",
+        "for name in sorted(entries):",
+        "  full=os.path.join(root, name)",
+        "  try:",
+        "    s=os.lstat(full)",
+        "    mode=s.st_mode",
+        "    is_link=st.S_ISLNK(mode)",
+        "    is_dir=st.S_ISDIR(mode)",
+        "    t='symlink' if is_link else 'directory' if is_dir else 'file'",
+        "    out.append({'name': name, 'path': full, 'type': t, 'size': s.st_size, 'mtime': int(s.st_mtime*1000)})",
+        "  except Exception:",
+        "    out.append({'name': name, 'path': full, 'type': 'file', 'size': 0})",
+        "print(json.dumps(out))",
+      ].join("; ");
+
+      const command = `python3 -c ${escapeValue(py)} 2>/dev/null || python -c ${escapeValue(py)} 2>/dev/null || echo '[]'`;
+      const result = await this.commands.run(command, {
+        displayName: `Listing: ${dirName}`,
+      });
+      if (result.exitCode !== 0) return [];
+      const raw = result.stdout.trim();
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed && typeof parsed === "object" && "error" in (parsed as Record<string, unknown>)) {
+          return [];
+        }
+        if (!Array.isArray(parsed)) return [];
+        return parsed as Array<{
+          name: string;
+          path: string;
+          type: "file" | "directory" | "symlink";
+          size: number;
+          mtime?: number;
+        }>;
+      } catch {
+        return [];
+      }
     },
 
     downloadFromUrl: async (url: string, rawPath: string): Promise<void> => {

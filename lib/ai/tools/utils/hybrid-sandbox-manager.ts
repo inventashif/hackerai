@@ -575,12 +575,18 @@ export class HybridSandboxManager implements SandboxManager {
       );
     }
 
-    // If preference is E2B, always use E2B (but block for free users)
+    // If preference is E2B, always use E2B (but block for free users
+    // and personal/local-only deployments that disable the cloud sandbox).
     if (this.sandboxPreference === "e2b") {
-      if (this.subscription === "free") {
-        throw new Error("Cloud sandbox requires a paid plan.");
+      const { isE2BDisabled } = await import("@/lib/auth/personal-mode");
+      if (isE2BDisabled()) {
+        // Fall through to local connections instead of the hosted sandbox.
+      } else {
+        if (this.subscription === "free") {
+          throw new Error("Cloud sandbox requires a paid plan.");
+        }
+        return this.getE2BSandbox();
       }
-      return this.getE2BSandbox();
     }
 
     // Check if the preferred connection is available
@@ -622,10 +628,10 @@ export class HybridSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox! };
     }
 
-    // Free users cannot fall back to E2B — must use local sandbox
-    if (this.subscription === "free") {
+    const { isE2BDisabled } = await import("@/lib/auth/personal-mode");
+    if (this.subscription === "free" || isE2BDisabled()) {
       throw new Error(
-        "Local sandbox disconnected. Reconnect your desktop app or upgrade to Pro for cloud sandbox.",
+        "Local sandbox disconnected. Start the local sandbox client, then try again.",
       );
     }
 
@@ -841,6 +847,7 @@ Browser Automation:
 - Chromium and agent-browser are preinstalled only in the Cloud sandbox.
 - On this host, browser automation is host-dependent. If browser automation is needed, first check with \`${agentBrowserProbe}\`.
 - Use agent-browser only if it is already installed. Do not install browser automation packages on the host unless the user explicitly asks.
+- If agent-browser is available, use: \`agent-browser open <url>\` → \`agent-browser snapshot -i\` → interact via refs (\`agent-browser click @eN\`, \`agent-browser fill @eN "value"\`) → \`agent-browser screenshot\` for visual confirmation.
 - If agent-browser is unavailable, continue with other installed tools when possible or tell the user they can switch to the Cloud sandbox for the preinstalled browser workflow.
 </sandbox_environment>`;
     }

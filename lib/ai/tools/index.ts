@@ -17,6 +17,7 @@ import {
   createUpdateNote,
   createDeleteNote,
 } from "./notes";
+import { createMemory } from "./memory";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
@@ -173,11 +174,16 @@ export const createTools = (
       get_terminal_files: createGetTerminalFiles(context),
       file: createFile(context),
       todo_write: createTodoWrite(context),
+      // `notesEnabled` gates structured memory too: both are persistent
+      // cross-session user knowledge, so the same plan rule and the same
+      // Settings > Personalization > Notes opt-out govern them. See
+      // `areNotesEnabled` in lib/notes/gate.ts.
       ...(notesEnabled && {
         create_note: createCreateNote(context),
         list_notes: createListNotes(context),
         update_note: createUpdateNote(context),
         delete_note: createDeleteNote(context),
+        memory: createMemory(context),
       }),
       ...(process.env.PERPLEXITY_API_KEY && {
         web_search: createWebSearch(context),
@@ -203,6 +209,9 @@ export const createTools = (
             list_notes: allTools.list_notes,
             update_note: allTools.update_note,
             delete_note: allTools.delete_note,
+            // Available in Ask mode too: recalling prior knowledge matters
+            // most where there is no sandbox to re-derive it from.
+            memory: allTools.memory,
           }),
           ...(process.env.PERPLEXITY_API_KEY && {
             web_search: createWebSearch(context),

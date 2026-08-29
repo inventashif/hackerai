@@ -163,6 +163,9 @@ export default defineSchema({
     pinned_at: v.optional(v.number()),
     sandbox_type: v.optional(v.string()),
     selected_model: v.optional(v.string()),
+    reasoning_tier: v.optional(
+      v.union(v.literal("quick"), v.literal("thorough"), v.literal("deep")),
+    ),
     project_id: v.optional(v.id("projects")),
     // Legacy field retained on historical rows. The local-provider feature
     // was removed and nothing reads or writes this anymore — kept in the
@@ -441,6 +444,9 @@ export default defineSchema({
     // removed and nothing reads or writes this anymore — kept in the schema
     // so old rows still pass validation.
     max_mode_enabled: v.optional(v.boolean()),
+    reasoning_tier: v.optional(
+      v.union(v.literal("quick"), v.literal("thorough"), v.literal("deep")),
+    ),
   }).index("by_user_id", ["user_id"]),
 
   // Extra usage (created when user enables extra usage)
@@ -749,6 +755,116 @@ export default defineSchema({
       searchField: "content",
       filterFields: ["user_id", "category"],
     }),
+
+  // ── Structured long-term memory ───────────────────────────────────────────
+  //
+  // A connected memory store, as opposed to `notes` above which is a flat
+  // per-user list. Two structures coexist deliberately:
+  //
+  //   1. A TREE via `parent_id` + materialized `path`, so the agent can
+  //      navigate memory like a directory and load a bounded subtree instead
+  //      of everything at once.
+  //   2. A GRAPH via `memory_edges`, for typed relationships that cut across
+  //      the tree (evidence_for, supersedes, contradicts, ...).
+  //
+  // `path` stores node_ids (not titles) joined by "/", so renames never
+  // invalidate it. Moving a node requires rewriting descendant paths, which is
+  // accepted because moves are rare relative to reads.
+  //
+  // Scope note: user-scoped only for now. Team sharing intentionally does NOT
+  // add an `organization_id` here yet — Convex currently cannot verify org
+  // membership (it lives in WorkOS and is only checked in the Next.js layer),
+  // so an org id on this table would be an unverified claim. That lands after
+  // an `organization_memberships` table exists to authorize against.
+  memory_nodes: defineTable({
+    user_id: v.string(),
+    node_id: v.string(),
+
+    // Tree position. `parent_id` absent means a root node.
+    parent_id: v.optional(v.string()),
+    path: v.string(),
+    depth: v.number(),
+
+    kind: v.union(
+      v.literal("folder"), // organizational container, may hold little content
+      v.literal("fact"), // durable atomic statement
+      v.literal("finding"), // security finding / vulnerability
+      v.literal("target"), // scope target: host, app, endpoint
+      v.literal("methodology"), // reusable technique or playbook
+      v.literal("plan"), // intent / next steps
+      v.literal("question"), // open question to resolve
+      v.literal("summary"), // condensed span of conversation
+    ),
+
+    title: v.string(),
+    content: v.string(),
+    tags: v.array(v.string()),
+    tokens: v.number(),
+
+    // Provenance: where this knowledge came from, so the agent can expand a
+    // node back to the original conversation rather than trusting it blindly.
+    source_chat_id: v.optional(v.string()),
+    source_message_id: v.optional(v.string()),
+    source_summary_id: v.optional(v.id("chat_summaries")),
+
+    // Soft delete. Archiving rather than deleting keeps edges from dangling
+    // and preserves the provenance chain of anything derived from this node.
+    status: v.union(v.literal("active"), v.literal("archived")),
+
+    // Pinned nodes are always eligible for context injection, bypassing
+    // relevance ranking.
+    pinned: v.optional(v.boolean()),
+
+    // Retrieval feedback, for ranking what to surface automatically.
+    access_count: v.optional(v.number()),
+    last_accessed_at: v.optional(v.number()),
+
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_node_id", ["node_id"])
+    // Children of a node; also lists roots when parent_id is undefined.
+    .index("by_user_parent_and_status", ["user_id", "parent_id", "status"])
+    .index("by_user_kind_and_status", ["user_id", "kind", "status"])
+    .index("by_user_status_and_updated", ["user_id", "status", "updated_at"])
+    // Subtree reads by materialized path prefix.
+    .index("by_user_and_path", ["user_id", "path"])
+    .index("by_user_and_pinned", ["user_id", "pinned"])
+    // Expand a compaction summary back into the nodes extracted from it.
+    .index("by_source_summary", ["source_summary_id"])
+    .index("by_source_chat", ["source_chat_id"])
+    .searchIndex("search_memory_nodes", {
+      searchField: "content",
+      filterFields: ["user_id", "kind", "status"],
+    }),
+
+  // Typed relationships between nodes, independent of tree parentage.
+  memory_edges: defineTable({
+    user_id: v.string(),
+    edge_id: v.string(),
+    from_node_id: v.string(),
+    to_node_id: v.string(),
+    relation: v.union(
+      v.literal("relates_to"),
+      v.literal("depends_on"),
+      v.literal("derived_from"),
+      v.literal("evidence_for"),
+      v.literal("contradicts"),
+      v.literal("supersedes"),
+    ),
+    // Why the link exists, so a later reader can judge whether it still holds.
+    note: v.optional(v.string()),
+    created_at: v.number(),
+  })
+    .index("by_edge_id", ["edge_id"])
+    .index("by_user_and_from", ["user_id", "from_node_id"])
+    .index("by_user_and_to", ["user_id", "to_node_id"])
+    // Dedupe guard: one edge per (from, to, relation) triple.
+    .index("by_from_to_and_relation", [
+      "from_node_id",
+      "to_node_id",
+      "relation",
+    ]),
 
   // Legacy cleanup surface only. Do not add new writers. Remove this table
   // after production inspection and purge confirm that no rows remain.
@@ -1186,6 +1302,24 @@ export default defineSchema({
     status: v.optional(v.union(v.literal("pending"), v.literal("completed"))),
     claimed_at: v.optional(v.number()),
   }).index("by_event_id", ["event_id"]),
+
+  // Redeem codes (IVT-XXXXXX) — single-use tier grants created by admins.
+  redeem_codes: defineTable({
+    code: v.string(),
+    created_by: v.string(),
+    created_at: v.number(),
+    tier: v.union(v.literal("pro"), v.literal("pro-plus"), v.literal("ultra"), v.literal("team")),
+    duration_type: v.union(v.literal("hours"), v.literal("days"), v.literal("months")),
+    duration_value: v.number(),
+    is_redeemed: v.boolean(),
+    redeemed_by: v.optional(v.string()),
+    redeemed_at: v.optional(v.number()),
+    expires_at: v.optional(v.number()),
+    notes: v.optional(v.string()),
+  })
+    .index("by_code", ["code"])
+    .index("by_redeemed", ["is_redeemed"])
+    .index("by_created_by", ["created_by"]),
 
   // Durable idempotency records for user-visible checkout session confirms.
   // Unlike webhook retry deduplication, these keys must not be time-purged

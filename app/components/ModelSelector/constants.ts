@@ -56,6 +56,9 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   },
 ];
 
+// Kiro options are not hardcoded here: the picker fetches the live catalog
+// from `/api/kiro/status`, which reads `GET /v1/models` off the gateway.
+
 export const getDefaultModelForMode = (mode: ChatMode): SelectedModel => {
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
   return options[0].id;

@@ -1,0 +1,4 @@
+services:
+  centrifugo:
+    ports: !override
+      - "8001:8000"

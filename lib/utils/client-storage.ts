@@ -1,9 +1,11 @@
 import {
   coerceAgentPermissionMode,
+  coerceReasoningTier,
   coerceSelectedModel,
   isChatMode,
   type AgentPermissionMode,
   type ChatMode,
+  type ReasoningTier,
   type SelectedModel,
 } from "@/types/chat";
 
@@ -524,6 +526,27 @@ export const clearSelectedModelFromStorage = (): void => {
     window.localStorage.removeItem(SELECTED_MODEL_STORAGE_KEY);
     window.localStorage.removeItem(`${SELECTED_MODEL_STORAGE_KEY}_ask`);
     window.localStorage.removeItem(`${SELECTED_MODEL_STORAGE_KEY}_agent`);
+  } catch {
+    // ignore
+  }
+};
+
+const REASONING_TIER_STORAGE_KEY = "reasoning_tier";
+
+export const readReasoningTier = (): ReasoningTier | null => {
+  if (!isBrowser()) return null;
+  try {
+    const raw = window.localStorage.getItem(REASONING_TIER_STORAGE_KEY);
+    return coerceReasoningTier(raw);
+  } catch {
+    return null;
+  }
+};
+
+export const writeReasoningTier = (tier: ReasoningTier): void => {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(REASONING_TIER_STORAGE_KEY, tier);
   } catch {
     // ignore
   }

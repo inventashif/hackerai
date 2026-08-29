@@ -1,10 +1,16 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { AttachmentButton } from "@/app/components/AttachmentButton";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { ModelSelector } from "@/app/components/ModelSelector";
 import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
+import { FileExplorerSheet } from "@/app/components/FileExplorerSheet";
+import { ReasoningTierToggle } from "@/app/components/ReasoningTierToggle";
+import { RedeemCodeDialog } from "@/app/components/RedeemCodeDialog";
+import { readReasoningTier, writeReasoningTier } from "@/lib/utils/client-storage";
+import type { ReasoningTier } from "@/types/chat";
 import {
   SubmitStopButton,
   type SubmitStopButtonProps,
@@ -36,6 +42,14 @@ export function ChatInputToolbar({
     subscription,
   } = useGlobalState();
   const { user } = useAuth();
+  const [reasoningTier, setReasoningTier] = useState<ReasoningTier | null>(null);
+  useEffect(() => {
+    setReasoningTier(readReasoningTier());
+  }, []);
+  const handleReasoningTierChange = (tier: ReasoningTier) => {
+    writeReasoningTier(tier);
+    setReasoningTier(tier);
+  };
   const showFreeAskComputerActivation = Boolean(
     chatModeAccessResolved &&
     user &&
@@ -73,6 +87,12 @@ export function ChatInputToolbar({
               onChange={setSandboxPreference}
               size="toolbar"
             />
+          </div>
+          <div data-testid="chat-input-desktop-files">
+            <FileExplorerSheet />
+          </div>
+          <div data-testid="chat-input-reasoning-toggle">
+            <ReasoningTierToggle value={reasoningTier} onChange={handleReasoningTierChange} subscription={subscription} />
           </div>
         </>
       ) : null}

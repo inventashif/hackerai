@@ -579,9 +579,12 @@ export const createOpenUrlToolSchema = ({
 - URLs must be valid and publicly accessible
 - Prioritize cybersecurity-relevant information: CVEs, CVSS scores, exploits, PoCs, security tools, and pentest methodologies
 - Include specific versions, configurations, and technical details; cite reliable sources (NIST, OWASP, CVE databases)
+- Only suitable for static, server-rendered, publicly-accessible pages. Content is extracted server-side and JavaScript is NOT executed.
+- Do NOT use for pages that require authentication/login, JavaScript to render content (SPAs, React/Vue apps), form interaction, or screenshot evidence — use agent-browser terminal commands instead for those cases.
 </instructions>`,
     inputSchema: createOpenUrlToolInputSchema({ modelName }),
   });
+
 
 export const openUrlTool = createOpenUrlToolSchema();
 
@@ -781,6 +784,156 @@ Use to delete test or scratch notes created during experimentation
 
 export type DeleteNoteToolInput = z.infer<typeof deleteNoteToolInputSchema>;
 
+// ── Structured memory ───────────────────────────────────────────────────────
+
+export const MEMORY_ACTIONS = [
+  "create",
+  "list",
+  "read",
+  "search",
+  "update",
+  "move",
+  "archive",
+  "link",
+  "neighbors",
+] as const;
+
+export const MEMORY_NODE_KINDS = [
+  "folder",
+  "fact",
+  "finding",
+  "target",
+  "methodology",
+  "plan",
+  "question",
+  "summary",
+] as const;
+
+export const MEMORY_RELATIONS = [
+  "relates_to",
+  "depends_on",
+  "derived_from",
+  "evidence_for",
+  "contradicts",
+  "supersedes",
+] as const;
+
+/** Actions that address an existing node and therefore require `node_id`. */
+export const MEMORY_ACTIONS_REQUIRING_NODE_ID = [
+  "read",
+  "update",
+  "move",
+  "archive",
+  "link",
+  "neighbors",
+] as const;
+
+export const memoryToolInputSchema = z.object({
+  action: z.enum(MEMORY_ACTIONS).describe("The memory operation to perform"),
+  brief: toolBriefSchema,
+  node_id: z
+    .string()
+    .optional()
+    .describe(
+      "Target node. Required for read, update, move, archive, link, neighbors. For `list`, omit it to list root nodes.",
+    ),
+  parent_id: z
+    .string()
+    .optional()
+    .describe(
+      "For `create`, the parent to nest under (omit for a root node). For `move`, the new parent (omit to promote to a root).",
+    ),
+  title: z.string().optional().describe("Node title. Required for `create`."),
+  content: z
+    .string()
+    .optional()
+    .describe("Node body; supports markdown. Required for `create`."),
+  kind: z
+    .enum(MEMORY_NODE_KINDS)
+    .optional()
+    .describe(
+      'Node type. "folder" for grouping; "fact", "finding", "target", "methodology", "plan", "question" for content. Defaults to "fact".',
+    ),
+  tags: z.array(z.string()).optional().describe("Tags for cross-referencing"),
+  pinned: z
+    .boolean()
+    .optional()
+    .describe(
+      "Pinned nodes are always loaded into context, bypassing relevance ranking. Use sparingly for durable, high-value facts.",
+    ),
+  query: z
+    .string()
+    .optional()
+    .describe("Full-text search string. Required for `search`."),
+  limit: z.number().int().optional().describe("Max results (default 50)"),
+  max_depth: z
+    .number()
+    .int()
+    .optional()
+    .describe("For `read`, how many levels of descendants to include"),
+  to_node_id: z
+    .string()
+    .optional()
+    .describe("For `link`, the target node of the relationship"),
+  relation: z
+    .enum(MEMORY_RELATIONS)
+    .optional()
+    .describe("For `link`, the relationship type")
+    ,
+  note: z
+    .string()
+    .optional()
+    .describe("For `link`, why the relationship exists"),
+  restore: z
+    .boolean()
+    .optional()
+    .describe("For `archive`, set true to restore instead of archive"),
+});
+
+export const memoryTool = tool({
+  description: `Structured long-term memory that persists across ALL conversations. Unlike notes (a flat list), memory is a navigable tree with typed cross-links, so knowledge stays connected instead of isolated.
+
+<structure>
+Nodes form a TREE via parent/child, like directories. Use "folder" nodes to group related work (e.g. a target, an engagement, a research area) and put content nodes underneath.
+Nodes also form a GRAPH via links, for relationships that cross the tree.
+</structure>
+
+<actions>
+- create: Add a node. Pass parent_id to nest it.
+- list: List children of a node, or root nodes when node_id is omitted. Start here to explore.
+- read: Read one node plus its ancestors and descendants.
+- search: Full-text search across node content.
+- update: Change a node's title, content, kind, tags, or pinned state.
+- move: Reparent a node (its whole subtree follows).
+- archive: Soft-delete a node and its subtree; restore:true undoes it.
+- link: Create a typed relationship between two nodes.
+- neighbors: List nodes linked to/from a node.
+</actions>
+
+<relations>
+relates_to: general association
+depends_on: the source requires the target
+derived_from: the source was inferred from the target
+evidence_for: the source is evidence supporting the target
+contradicts: the two disagree — record this rather than silently overwriting
+supersedes: the source replaces outdated information in the target
+</relations>
+
+<when_to_use>
+- Before starting work, use "list" on roots or "search" to recover what you already know. Do this instead of asking the user to repeat context.
+- When you learn something durable (a confirmed finding, a working technique, a scope detail), "create" a node under the relevant folder.
+- When new information conflicts with an existing node, "link" it with "contradicts" or "supersedes" rather than deleting. Losing the disagreement loses the reasoning.
+- When a finding rests on specific evidence, "link" it with "evidence_for" so the chain is auditable later.
+</when_to_use>
+
+<guidance>
+Prefer many small, focused nodes over few large ones — they can be linked precisely and retrieved without pulling in unrelated text. Keep folder trees shallow and meaningful; deep nesting is capped.
+</guidance>`,
+  inputSchema: memoryToolInputSchema,
+});
+
+export type MemoryToolInput = z.infer<typeof memoryToolInputSchema>;
+
 export type AgentToolSchemaMode = "agent" | "ask";
 
 export const createAgentToolSchemaSet = ({
@@ -800,6 +953,8 @@ export const createAgentToolSchemaSet = ({
         list_notes: listNotesTool,
         update_note: updateNoteTool,
         delete_note: deleteNoteTool,
+        // Structured memory shares the notes gate; see lib/notes/gate.ts.
+        memory: memoryTool,
       }
     : {};
   const networkTools = {

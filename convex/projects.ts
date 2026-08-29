@@ -154,6 +154,25 @@ export const createProject = mutation({
   },
 });
 
+export const get = query({
+  args: {
+    id: v.id("projects"),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return null;
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+
+    const project = await ctx.db.get(args.id);
+    if (!project) return null;
+
+    // Ensure the user owns this project
+    if (project.user_id !== identity.subject) return null;
+
+    return project;
+  },
+});
+
 export const listProjects = query({
   args: { paginationOpts: paginationOptsValidator },
   handler: async (ctx, args) => {

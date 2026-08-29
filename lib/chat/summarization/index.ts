@@ -31,6 +31,7 @@ import {
   generateSummaryText,
   buildSummaryMessage,
   persistSummary,
+  recordCompactionMemoryLink,
   isSummaryMessage,
   extractSummaryText,
   buildSummaryPersistenceMetadata,
@@ -297,6 +298,12 @@ export interface CheckAndSummarizeOptions {
   transcriptMessages?: UIMessage[];
   maxTokensOverride?: number;
   providerPromptPressure?: ProviderPromptPressure | null;
+  /**
+   * Owner of the chat. Optional so existing callers keep compiling, but without
+   * it no structured-memory node is written for this compaction (memory is
+   * user-scoped). Absence degrades to today's behavior rather than failing.
+   */
+  userId?: string;
 }
 
 /**
@@ -777,6 +784,7 @@ export const checkAndSummarizeIfNeeded = async ({
   transcriptMessages,
   maxTokensOverride,
   providerPromptPressure,
+  userId,
 }: CheckAndSummarizeOptions): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -941,7 +949,29 @@ export const checkAndSummarizeIfNeeded = async ({
       reason: providerPromptPressure ? "provider_pressure" : undefined,
     });
 
-    await persistSummary(chatId, finalSummaryText, cutoffMessageId, metadata);
+    const summaryId = await persistSummary(
+      chatId,
+      finalSummaryText,
+      cutoffMessageId,
+      metadata,
+    );
+
+    // Mirror the compaction into structured memory so it survives the
+    // `chat_summaries` retention limits (each compaction deletes the previous
+    // row; the chain caps at 10) and the sandbox transcript's lifetime.
+    //
+    // Stores `summaryText`, NOT `finalSummaryText`: the latter has the
+    // transcript notice appended, which points at a sandbox path that stops
+    // resolving once the sandbox dies. Persisting a dead path into permanent
+    // memory would recreate the very problem this is fixing.
+    await recordCompactionMemoryLink({
+      userId,
+      chatId,
+      summaryText,
+      summaryId,
+      cutoffMessageId,
+      mode,
+    });
 
     return {
       summarizationAttempted: true,

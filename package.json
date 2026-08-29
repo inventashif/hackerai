@@ -23,6 +23,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "setup": "pnpm install && npx tsx scripts/setup.ts",
+    "personal:setup": "node scripts/personal-setup.mjs",
+    "personal:dev": "node scripts/personal-dev.mjs",
+    "hackerai": "node scripts/hackerai.mjs",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -60,6 +63,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "3.0.74",
+    "@ai-sdk/provider": "3.0.10",
     "@ai-sdk/react": "3.0.210",
     "@aws-sdk/client-s3": "3.1107.0",
     "@aws-sdk/s3-request-presigner": "3.1107.0",
@@ -103,6 +107,7 @@
     "@xterm/xterm": "^6.0.0",
     "ai": "6.0.200",
     "ai-elements": "^1.9.0",
+    "better-sqlite3": "^13.0.3",
     "centrifuge": "^5.7.0",
     "chalk": "^5.6.2",
     "class-variance-authority": "^0.7.1",
@@ -189,6 +194,7 @@
     "*.{json,css,md}": "prettier --write"
   },
   "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3"],
     "overrides": {
       "axios": "1.18.0",
       "e2b>chalk": "^4.1.2",

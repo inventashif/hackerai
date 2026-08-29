@@ -7,6 +7,10 @@ import type {
 import { getPersonalityInstructions } from "./system-prompt/personality";
 import { generateUserBio } from "./system-prompt/bio";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
+import { getMemoryGuidanceSection } from "./system-prompt/memory";
+import { areNotesEnabled } from "./notes/gate";
+import { getReasoningSection } from "./system-prompt/reasoning";
+import type { ReasoningTier } from "@/types/chat";
 import {
   getModelCutoffDate,
   getModelDisplayName,
@@ -92,7 +96,8 @@ Use established tools before writing custom scripts when they fit the task. Pick
 - dirsearch: use for scoped directory/file discovery against mapped web roots. Keep wordlists and extensions aligned to the detected stack and avoid broad scans before scope is clear.
 - wafw00f: use early to fingerprint WAF/CDN behavior before noisy payload scans, then tune rate, headers, and payload strategy from the result.
 - cvemap: use after identifying product names and versions to map plausible CVEs. Treat output as leads; manually validate exploitability before reporting.
-- Browser screenshot flow: use agent-browser for visual, authenticated, JavaScript-heavy, or evidence-driven workflows. Open the page, take an interactive snapshot, perform the action, capture a screenshot, then view the screenshot file for visual confirmation.
+- open_url tool: use only for static, publicly-accessible, server-rendered pages where JavaScript execution, authentication, and screenshots are not needed (e.g., reading a CVE advisory, fetching a known API doc URL). Do NOT use open_url for login-gated pages, SPA/JavaScript-rendered content, pages that require interaction, or any workflow that needs visual confirmation — it returns extracted text only and will produce empty or incomplete results for such pages.
+- agent-browser (cloud sandbox): use for authenticated, JavaScript-heavy, visual, or evidence-driven browser workflows. Prefer agent-browser over open_url whenever a page requires login, JavaScript to render, form interaction, or screenshot evidence. Preferred workflow: \`agent-browser open <url>\` → \`agent-browser snapshot -i\` → interact via refs → \`agent-browser screenshot\` → view the screenshot file for visual confirmation.
 </sandbox_tool_recipes>`;
 
 const AGENT_BROWSER_SECTION = `<agent_browser>
@@ -474,10 +479,13 @@ export const systemPrompt = async (
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
   securityValidationSubagentsEnabled: boolean = false,
+  reasoningTier?: ReasoningTier,
 ): Promise<string> => {
-  const shouldIncludeNotes =
-    (subscription !== "free" || mode === "agent") &&
-    (userCustomization?.include_notes ?? true);
+  const shouldIncludeNotes = areNotesEnabled(
+    mode,
+    subscription,
+    userCustomization,
+  );
 
   const personalityInstructions = getPersonalityInstructions(
     userCustomization?.personality,
@@ -526,12 +534,26 @@ The current date is ${currentDateTime}.`;
 
   sections.push(generateUserBio(userCustomization || null));
 
+  // Reasoning depth (additive; defaults to subscription-aware tier if not specified)
+  {
+    const tier: ReasoningTier =
+      reasoningTier ??
+      (subscription === "free" ? "quick" : subscription === "ultra" ? "deep" : "thorough");
+    sections.push(getReasoningSection(tier));
+  }
+
   // Notes are injected via <system-reminder> in messages to keep the system prompt
   // stable for prompt caching. Only include the static "disabled" message here.
   if (!shouldIncludeNotes) {
     sections.push(
       getNotesDisabledMessage(subscription === "free" && mode !== "agent"),
     );
+  } else {
+    // Structured-memory guidance is static, so it is safe here for prompt
+    // caching. Without it the agent only learns memory exists from the tool
+    // description, which is not enough to make it check memory before starting
+    // work or record findings as it goes.
+    sections.push(getMemoryGuidanceSection());
   }
 
   // Add personality instructions at the end

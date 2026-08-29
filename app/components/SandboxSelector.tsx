@@ -51,6 +51,10 @@ export function SandboxSelector({
     desktopBridgeStatus,
   } = useGlobalState();
   const isFreeUser = subscription === "free";
+  const cloudDisabled =
+    process.env.NEXT_PUBLIC_PERSONAL_MODE === "true" ||
+    process.env.NEXT_PUBLIC_DISABLE_E2B === "true";
+  const localOnly = isFreeUser || cloudDisabled;
 
   const detectedPlatform = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -87,7 +91,9 @@ export function SandboxSelector({
         shortLabel: conn.osInfo?.hostname || conn.name,
         icon: Laptop,
       })) || [];
-  const options = [cloudOption, ...desktopOptions, ...remoteOptions];
+  const options = localOnly
+    ? [...desktopOptions, ...remoteOptions]
+    : [cloudOption, ...desktopOptions, ...remoteOptions];
 
   // Trigger presence cleanup when dropdown opens
   useEffect(() => {
@@ -102,7 +108,7 @@ export function SandboxSelector({
     if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
       // Free users can't fall back to Cloud — leave preference as-is,
       // the ChatInput effect will switch them to ask mode
-      if (isFreeUser) return;
+      if (isFreeUser || cloudDisabled) return;
 
       onChange?.("e2b");
       // Only show toast for remote disconnects, not when Desktop is hidden
@@ -113,15 +119,18 @@ export function SandboxSelector({
         });
       }
     }
-  }, [connections, valueMatchesOption, value, onChange, isFreeUser]);
+  }, [connections, valueMatchesOption, value, onChange, isFreeUser, cloudDisabled]);
 
-  // Auto-select first local option for free users who default to Cloud
+  // Auto-select first local option for free/personal users who default to Cloud
   useEffect(() => {
-    if (!isFreeUser || value !== "e2b" || !connections?.length) return;
+    if (!localOnly || (value !== "e2b" && value !== "desktop") || !connections?.length)
+      return;
+    if (value === "desktop" && connections.some((c) => c.isDesktop)) return;
+    if (value !== "e2b" && value !== "desktop") return;
     const desktop = connections.find((c) => c.isDesktop);
     onChange?.(desktop ? "desktop" : connections[0].connectionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFreeUser, value, connections]);
+  }, [localOnly, value, connections]);
 
   const unavailableLocalOption: ConnectionOption | null =
     value !== "e2b" && !valueMatchesOption
@@ -175,6 +184,7 @@ export function SandboxSelector({
       </PopoverTrigger>
       <PopoverContent className="w-[240px] p-1" align="start">
         <div className="space-y-0.5">
+          {!localOnly && (
           <button
             key={cloudOption.id}
             onClick={() => {
@@ -210,6 +220,7 @@ export function SandboxSelector({
               value === cloudOption.id && <Check className="h-4 w-4 shrink-0" />
             )}
           </button>
+          )}
 
           {desktopOptions.map((option) => {
             const OptionIcon = option.icon;

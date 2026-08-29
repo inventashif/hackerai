@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 
 const postHogSourceMapApiKey = process.env.POSTHOG_CLI_API_KEY?.trim();
 const postHogSourceMapProjectId = process.env.POSTHOG_CLI_PROJECT_ID?.trim();
@@ -20,7 +21,27 @@ if (
   );
 }
 
+const isPersonalMode =
+  process.env.PERSONAL_MODE === "true" ||
+  process.env.NEXT_PUBLIC_PERSONAL_MODE === "true";
+
+const personalAuthkitAliases = {
+  "@workos-inc/authkit-nextjs": "./lib/auth/personal-authkit.ts",
+  "@workos-inc/authkit-nextjs/components":
+    "./lib/auth/personal-authkit-components.tsx",
+};
+
+const personalAuthkitWebpackAliases = {
+  "@workos-inc/authkit-nextjs": path.resolve(
+    "./lib/auth/personal-authkit.ts",
+  ),
+  "@workos-inc/authkit-nextjs/components": path.resolve(
+    "./lib/auth/personal-authkit-components.tsx",
+  ),
+};
+
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ["127.0.0.1", "10.126.148.254"],
   devIndicators: false,
   productionBrowserSourceMaps: posthogSourceMapsEnabled,
   typescript: {
@@ -52,8 +73,28 @@ const nextConfig: NextConfig = {
       { source: "/icon-512x512.png", headers: iconCacheHeaders },
     ];
   },
+  // Stable since Next 15 (was experimental.serverComponentsExternalPackages).
+  // Keeping it nested under `experimental` is a type error in Next 16.
+  serverExternalPackages: ["better-sqlite3"],
   experimental: {
     optimizePackageImports: ["lucide-react", "date-fns"],
+  },
+  // Next 16 uses Turbopack for production builds by default. An explicit
+  // config is required when a `webpack` callback also exists; without it,
+  // hosted builds fail before compilation with "webpack config and no
+  // turbopack config". Hosted mode needs no aliases, while personal mode
+  // swaps WorkOS for the local auth shim.
+  turbopack: isPersonalMode
+    ? { resolveAlias: personalAuthkitAliases }
+    : {},
+  webpack: (config) => {
+    if (isPersonalMode) {
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        ...personalAuthkitWebpackAliases,
+      };
+    }
+    return config;
   },
   ...(process.env.NODE_ENV === "development" && {
     logging: {
