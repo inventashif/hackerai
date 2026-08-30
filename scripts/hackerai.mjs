@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, appendFileSync, mkdirSync } from "node:fs";
+import os from "node:os";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +25,11 @@ if (process.getuid?.() === 0 && process.env.SUDO_USER) {
 
 const shellCommand = (command) =>
   spawnSync("sh", ["-lc", command], { encoding: "utf8" }).stdout?.trim() || "";
+
+/** readlink that returns "" instead of throwing on ESRCH / EACCES / ENOENT. */
+const readlinkSafe = (p) => {
+  try { return readlinkSync(p); } catch { return ""; }
+};
 
 const resolveCommand = (name, extraCandidates = []) => {
   for (const candidate of extraCandidates) {
@@ -152,22 +158,62 @@ env.CONVEX_TMPDIR = convexTmpDir;
   }
 }
 
-// ── kill stale dev processes (previous hackerai / personal:dev runs) ───────
+// ── kill stale dev processes from a previous run ────────────────────────
+//
+// Repo-scoped by matching this checkout's absolute path in the process
+// cmdline. Naked `pkill -f next-server` would also hit `next-server`
+// instances from other projects on the same machine, which was a real risk
+// on a laptop that also runs opencode and other Node monorepos.
+//
+// Graceful first (SIGTERM), then SIGKILL only if the process refused to
+// exit. Convex's local backend writes a SQLite journal on shutdown; hard-
+// killing it can leave the DB in a state that costs a restart to recover.
 {
-  const stale = [
-    ["-9", "-f", "next-server"],
-    ["-9", "-f", "convex-local-backend"],
-    ["-9", "-f", "concurrently.*dev:local"],
-    ["-9", "-f", "packages/local/dist"],
+  const listStaleFor = (pattern) => {
+    const r = spawnSync("pgrep", ["-af", pattern], { encoding: "utf8" });
+    if (r.status !== 0 || !r.stdout) return [];
+    const mine = [];
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const [pidStr, ...cmdParts] = line.trim().split(/\s+/);
+      const pid = Number(pidStr);
+      if (!pid || pid === process.pid) continue;
+      const cmd = cmdParts.join(" ");
+      // Only include processes running inside THIS checkout. The absolute
+      // path appears in either the cmdline (spawned with cwd embedded) or
+      // in /proc/<pid>/cwd. A dev server for a different repo won't match.
+      const inThisRepo = cmd.includes(root);
+      const matchesCwd = readlinkSafe(`/proc/${pid}/cwd`) === root;
+      if (inThisRepo || matchesCwd) mine.push(pid);
+    }
+    return mine;
+  };
+
+  const patterns = [
+    "next-server",
+    "convex-local-backend",
+    "concurrently.*dev:local",
+    "packages/local/dist",
   ];
-  let killed = false;
-  for (const args of stale) {
-    const r = spawnSync("pkill", args, { stdio: "ignore" });
-    if (r.status === 0) killed = true;
-  }
-  if (killed) {
-    log("Cleaned up stale dev processes");
-    spawnSync("sleep", ["1.5"]);
+  const targets = new Set();
+  for (const p of patterns) for (const pid of listStaleFor(p)) targets.add(pid);
+
+  if (targets.size > 0) {
+    log(`Cleaning ${targets.size} stale dev process(es) from a prior run`);
+    for (const pid of targets) {
+      try { process.kill(pid, "SIGTERM"); } catch {}
+    }
+    // Give them up to 5s to flush and exit cleanly before escalating.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const alive = [...targets].filter((pid) => {
+        try { process.kill(pid, 0); return true; } catch { return false; }
+      });
+      if (alive.length === 0) break;
+      spawnSync("sleep", ["0.25"]);
+    }
+    for (const pid of targets) {
+      try { process.kill(pid, "SIGKILL"); } catch {}
+    }
   }
 }
 
@@ -268,6 +314,18 @@ const ensureSandboxToken = () => {
 log("Syncing local Convex env ...");
 syncConvexEnv(2);
 log("Starting Next.js + local Convex — Agent mode runs in-process.");
+
+// Cap V8 heap so a runaway Next/Convex worker cannot OOM the box.
+// Chosen for a 7-8GB laptop: default is ~2GB per Node process which stacks
+// badly across concurrently's children (next, convex CLI, esbuild workers).
+// Only applied if the caller has not already set NODE_OPTIONS themselves.
+const totalMemMb = Math.floor(os.totalmem() / 1024 / 1024);
+if (!env.NODE_OPTIONS) {
+  const heapMb = totalMemMb <= 8192 ? 2048 : totalMemMb <= 16384 ? 3072 : 4096;
+  env.NODE_OPTIONS = `--max-old-space-size=${heapMb}`;
+  log(`Capping Node heap at ${heapMb} MiB (RAM ${Math.round(totalMemMb / 1024)} GiB)`);
+}
+
 const child = spawn(pnpmCommand, ["run", "dev:local"], { cwd: root, env, stdio: "inherit" });
 child.on("error", (error) => {
   fail(`Could not start pnpm: ${error.message}`);
@@ -334,13 +392,42 @@ const pollReady = async () => {
 pollReady();
 
 // ── graceful shutdown ────────────────────────────────────────────────────
-const shutdown = () => {
-  if (sandboxProc) sandboxProc.kill("SIGTERM");
-  child.kill("SIGTERM");
+//
+// Convex writes a SQLite journal on shutdown; SIGKILL leaves it in a state
+// that costs a restart to recover. Give SIGTERM up to 5s to propagate through
+// pnpm → concurrently → next/convex before escalating.
+let shuttingDown = false;
+const waitFor = async (proc, timeoutMs) => {
+  if (!proc || proc.exitCode !== null) return;
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    proc.once("exit", finish);
+    setTimeout(finish, timeoutMs);
+  });
 };
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+const shutdown = async () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log("Shutting down...");
+  if (sandboxProc && sandboxProc.exitCode === null) sandboxProc.kill("SIGTERM");
+  if (child.exitCode === null) child.kill("SIGTERM");
+  await Promise.all([waitFor(child, 5000), waitFor(sandboxProc, 3000)]);
+  if (child.exitCode === null) {
+    warn("dev:local did not exit within 5s, escalating to SIGKILL");
+    try { child.kill("SIGKILL"); } catch {}
+  }
+  if (sandboxProc && sandboxProc.exitCode === null) {
+    try { sandboxProc.kill("SIGKILL"); } catch {}
+  }
+  process.exit(child.exitCode ?? 0);
+};
+process.on("SIGINT", () => { void shutdown(); });
+process.on("SIGTERM", () => { void shutdown(); });
 child.on("exit", (code) => {
-  if (sandboxProc) sandboxProc.kill("SIGTERM");
+  // If dev:local dies unexpectedly, kill the sandbox relay so it does not
+  // linger holding a Convex WebSocket to a dead backend.
+  if (shuttingDown) return;
+  if (sandboxProc && sandboxProc.exitCode === null) sandboxProc.kill("SIGTERM");
   process.exit(code ?? 0);
 });
