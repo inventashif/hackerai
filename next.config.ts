@@ -46,7 +46,7 @@ const nextConfig: NextConfig = {
   // that directory; without this the image build fails. Vercel ignores this
   // setting, so leaving it on is safe for any target.
   output: "standalone",
-  allowedDevOrigins: ["127.0.0.1", "10.126.148.254"],
+  allowedDevOrigins: ["127.0.0.1", "10.126.148.254", "*.trycloudflare.com"],
   devIndicators: false,
   productionBrowserSourceMaps: posthogSourceMapsEnabled,
   typescript: {

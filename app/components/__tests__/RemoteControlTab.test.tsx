@@ -90,6 +90,8 @@ const remoteConnection: MockConnection = {
   isDesktop: false,
 };
 
+const mockFetch = jest.fn<() => Promise<unknown>>();
+
 describe("RemoteControlTab", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -101,6 +103,22 @@ describe("RemoteControlTab", () => {
     mockGetToken.mockResolvedValue({ token: "test-token" });
     mockRegenerateToken.mockResolvedValue({ token: "regenerated-token" });
     mockWriteText.mockResolvedValue(undefined);
+    // Public tunnels down by default; individual tests override.
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        localConvexUrl: "http://127.0.0.1:3210",
+        localCentrifugoWsUrl: "ws://localhost:8001/connection/websocket",
+        publicConvexUrl: "",
+        publicCentrifugoWsUrl: "",
+        tunnelsReady: false,
+      }),
+    });
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: mockFetch,
+    });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: mockWriteText },
@@ -146,7 +164,9 @@ describe("RemoteControlTab", () => {
     render(<RemoteControlTab />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Copy Connect Machine command" }),
+      screen.getByRole("button", {
+        name: "Copy This machine — local backend, shared relay command",
+      }),
     );
 
     await waitFor(() => {
@@ -154,6 +174,9 @@ describe("RemoteControlTab", () => {
         expect.stringContaining("--token YOUR_TOKEN"),
       );
     });
+    expect(mockWriteText).toHaveBeenCalledWith(
+      expect.stringContaining("--convex-url http://127.0.0.1:3210"),
+    );
     expect(toast.success).toHaveBeenCalledWith("Command copied to clipboard");
     expect(toast.error).not.toHaveBeenCalled();
   });
@@ -165,13 +188,64 @@ describe("RemoteControlTab", () => {
     render(<RemoteControlTab />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Copy Connect Machine command" }),
+      screen.getByRole("button", {
+        name: "Copy This machine — local backend, shared relay command",
+      }),
     );
 
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith("Failed to copy command");
     });
     expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("shows a public-callback remote command with no localhost when tunnels are live", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        localConvexUrl: "http://127.0.0.1:3210",
+        localCentrifugoWsUrl: "ws://localhost:8001/connection/websocket",
+        publicConvexUrl: "https://convex-abc.trycloudflare.com",
+        publicCentrifugoWsUrl:
+          "wss://cent-xyz.trycloudflare.com/connection/websocket",
+        tunnelsReady: true,
+      }),
+    });
+    render(<RemoteControlTab />);
+
+    // Wait for the live tunnel state before copying — otherwise the button
+    // copies the "starting…" placeholder.
+    await screen.findByText(/Tunnel live/);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Copy Remote machine — public tunnel callback command",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mockWriteText).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "--convex-url https://convex-abc.trycloudflare.com",
+        ),
+      );
+    });
+    const copied: string = mockWriteText.mock.calls[0][0] as string;
+    expect(copied).toContain(
+      "--centrifugo-url wss://cent-xyz.trycloudflare.com/connection/websocket",
+    );
+    expect(copied).not.toContain("localhost");
+    expect(copied).not.toContain("127.0.0.1");
+  });
+
+  it("shows a waiting state for the remote command while tunnels are down", async () => {
+    render(<RemoteControlTab />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Starting public tunnel/i),
+      ).toBeInTheDocument();
+    });
   });
 
   it("handles a rejected token clipboard write without a false success", async () => {

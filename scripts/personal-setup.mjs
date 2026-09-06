@@ -122,6 +122,13 @@ const values = {
     existing.CENTRIFUGO_API_KEY || randomBytes(32).toString("hex"),
   CENTRIFUGO_WS_URL:
     existing.CENTRIFUGO_WS_URL || "ws://localhost:8001/connection/websocket",
+  // Public (cloudflared) endpoints for REMOTE sandboxes. Quick-tunnel hostnames
+  // are ephemeral, so these are filled in at runtime by
+  // scripts/ensure-public-tunnels.mjs (started from ./hackerai) and left empty
+  // here. Local sandboxes always use the localhost URLs above, which are
+  // permanent; only the Remote Control "remote machine" command uses these.
+  CENTRIFUGO_PUBLIC_WS_URL: existing.CENTRIFUGO_PUBLIC_WS_URL || "",
+  PUBLIC_CONVEX_URL: existing.PUBLIC_CONVEX_URL || "",
 };
 
 const body = `# Personal / local HackerAI configuration
@@ -161,6 +168,14 @@ ACCOUNT_IDENTITY_HMAC_SECRET=${values.ACCOUNT_IDENTITY_HMAC_SECRET}
 CENTRIFUGO_TOKEN_SECRET=${values.CENTRIFUGO_TOKEN_SECRET}
 CENTRIFUGO_API_KEY=${values.CENTRIFUGO_API_KEY}
 CENTRIFUGO_WS_URL=${values.CENTRIFUGO_WS_URL}
+CENTRIFUGO_PUBLIC_WS_URL=${values.CENTRIFUGO_PUBLIC_WS_URL}
+PUBLIC_CONVEX_URL=${values.PUBLIC_CONVEX_URL}
+
+# Optional: stable hostnames via Cloudflare Zero Trust named tunnels.
+# Set a token + its PUBLIC_* URL above and that target runs
+# cloudflared tunnel run instead of an ephemeral quick tunnel.
+# CLOUDFLARED_CONVEX_TUNNEL_TOKEN=
+# CLOUDFLARED_CENTRIFUGO_TUNNEL_TOKEN=
 `;
 
 writeFileSync(envPath, body);

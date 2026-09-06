@@ -46,6 +46,12 @@ const vars = {
     "CENTRIFUGO_WS_URL",
     "ws://localhost:8001/connection/websocket",
   ),
+  // Public WS URL for remote sandboxes. Empty until the cloudflared tunnels
+  // are up; connect returns it only when set.
+  CENTRIFUGO_PUBLIC_WS_URL: get("CENTRIFUGO_PUBLIC_WS_URL", ""),
+  // Public Convex URL for remote sandboxes (used to build the remote connect
+  // command shown in Settings → Remote Control).
+  PUBLIC_CONVEX_URL: get("PUBLIC_CONVEX_URL", ""),
   LOCAL_STORAGE_DIR: get("LOCAL_STORAGE_DIR", path.join(root, ".local-storage")),
 };
 

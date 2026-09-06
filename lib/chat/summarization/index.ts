@@ -29,6 +29,7 @@ import {
   NO_SUMMARIZATION,
   isAboveTokenThreshold,
   generateSummaryText,
+  isEmptySummaryError,
   buildSummaryMessage,
   persistSummary,
   recordCompactionMemoryLink,
@@ -481,7 +482,13 @@ const generateSummaryTextWithRetry = async ({
       attempt: "primary",
     };
   } catch (error) {
-    if (abortSignal?.aborted || !isMalformedProviderJsonError(error)) {
+    // An empty summary is retried on the fallback model for the same reason as
+    // malformed JSON: the primary provider returned a structurally useless
+    // response, and compacting on it would erase the conversation.
+    if (
+      abortSignal?.aborted ||
+      (!isMalformedProviderJsonError(error) && !isEmptySummaryError(error))
+    ) {
       throw error;
     }
 

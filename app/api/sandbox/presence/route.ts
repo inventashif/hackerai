@@ -11,6 +11,12 @@ import {
   presenceHasConnectionId,
 } from "@/lib/centrifugo/presence";
 
+// Budget for one channel's subscribe+presence round trip, measured from AFTER
+// the socket is connected.
+const PRESENCE_PROBE_TIMEOUT_MS = 5_000;
+// Separate budget for establishing the probe connection itself.
+const PRESENCE_CONNECT_TIMEOUT_MS = 5_000;
+
 export async function GET(request: NextRequest) {
   let userId: string;
   try {
@@ -47,6 +53,9 @@ export async function GET(request: NextRequest) {
   );
 
   const onlineConnectionIds = new Set<string>();
+  // Connections whose own probe failed while the overall probe succeeded. Not
+  // known to be offline, so they must never be swept/disconnected.
+  const indeterminateConnectionIds = new Set<string>();
   let presenceReliable = false;
 
   let client: Centrifuge | null = null;
@@ -55,6 +64,37 @@ export async function GET(request: NextRequest) {
   try {
     const token = await generateCentrifugoToken(userId, 30);
     client = new Centrifuge(wsUrl, { token });
+
+    // Establish the transport BEFORE creating subscriptions, so the TCP+WS+auth
+    // handshake is not billed against each channel's presence deadline. When the
+    // relay was unreachable this made every probe fail at exactly the timeout.
+    const connectingClient = client;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        detach();
+        reject(new Error("Centrifugo presence connect timeout"));
+      }, PRESENCE_CONNECT_TIMEOUT_MS);
+
+      const detach = () => {
+        clearTimeout(timer);
+        connectingClient.removeListener("connected", onConnected);
+        connectingClient.removeListener("error", onError);
+      };
+      const onConnected = () => {
+        detach();
+        resolve();
+      };
+      const onError = (ctx: { error?: { message?: string } }) => {
+        detach();
+        reject(
+          new Error(ctx.error?.message ?? "Centrifugo presence connect error"),
+        );
+      };
+
+      connectingClient.on("connected", onConnected);
+      connectingClient.on("error", onError);
+      connectingClient.connect();
+    });
 
     const probes = connections.map(
       (connection) =>
@@ -71,7 +111,7 @@ export async function GET(request: NextRequest) {
                 `Centrifugo presence timeout for connection ${connection.connectionId}`,
               ),
             );
-          }, 5000);
+          }, PRESENCE_PROBE_TIMEOUT_MS);
 
           const cleanup = () => {
             clearTimeout(timeout);
@@ -103,9 +143,28 @@ export async function GET(request: NextRequest) {
         }),
     );
 
-    client.connect();
-    await Promise.all(probes);
+    // Independently settled: one unresponsive channel must not invalidate the
+    // whole probe. Previously a single failure (common with several tabs open)
+    // rejected Promise.all, left presenceReliable false, and skipped the sweep
+    // entirely — or, once reliable, risked sweeping live connections.
+    const settled = await Promise.allSettled(probes);
+    settled.forEach((outcome, index) => {
+      if (outcome.status === "rejected") {
+        indeterminateConnectionIds.add(connections[index].connectionId);
+      }
+    });
     presenceReliable = true;
+
+    if (indeterminateConnectionIds.size > 0) {
+      phLogger.warn("sandbox_presence_probe_partial", {
+        event: "sandbox.presence_probe_partial",
+        userId,
+        connection_count: connections.length,
+        online_connection_count: onlineConnectionIds.size,
+        indeterminate_connection_count: indeterminateConnectionIds.size,
+        duration_ms: Date.now() - probeStart,
+      });
+    }
   } catch (err) {
     phLogger.warn("sandbox_presence_probe_unavailable", {
       event: "sandbox.presence_probe_unavailable",
@@ -141,6 +200,8 @@ export async function GET(request: NextRequest) {
     const stale = connections.filter(
       (conn) =>
         !onlineConnectionIds.has(conn.connectionId) &&
+        // A failed probe proves nothing — never disconnect on it.
+        !indeterminateConnectionIds.has(conn.connectionId) &&
         now - conn.lastSeen > LOCAL_SANDBOX_PRESENCE_GRACE_MS,
     );
     if (stale.length > 0) {

@@ -636,6 +636,35 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     );
   });
 
+  it("should refuse to save an empty summary and keep the previous one", async () => {
+    // Regression: an empty summary used to be inserted AND used to delete the
+    // previous good summary, leaving the chat with zero recoverable context.
+    const chat = makeChatDoc();
+    setupSaveSummaryQueries(chat);
+
+    const oldSummary = makeSummaryDoc({
+      summary_text: "old text",
+      summary_up_to_message_id: "msg-5",
+      summary_up_to_message_creation_time: 5_000,
+      previous_summaries: [],
+    });
+    mockCtx.db.get.mockResolvedValue(oldSummary);
+
+    const { saveLatestSummary } = await import("../chats");
+
+    const result = await saveLatestSummary.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      summaryText: "   \n  ",
+      summaryUpToMessageId: "msg-10",
+    });
+
+    expect(result).toBeNull();
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(mockCtx.db.delete).not.toHaveBeenCalled();
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
   it("should push old summary into previous_summaries[0] on second save", async () => {
     const chat = makeChatDoc();
     setupSaveSummaryQueries(chat);

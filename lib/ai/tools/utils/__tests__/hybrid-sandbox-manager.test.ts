@@ -108,6 +108,31 @@ describe("filterConnectionsByPresence", () => {
     expect(result.availableConnections).toEqual([live]);
     expect(result.staleConnections).toEqual([stale]);
   });
+
+  it("keeps connections whose individual presence probe failed", () => {
+    // A failed probe proves nothing about the client. Treating it as stale
+    // would disconnect a live sandbox owned by another tab or session.
+    const now = 100_000;
+    const staleLastSeen = now - LOCAL_SANDBOX_PRESENCE_GRACE_MS - 1;
+    const indeterminate = makeConnection({
+      connectionId: "conn-indeterminate",
+      lastSeen: staleLastSeen,
+    });
+    const stale = makeConnection({
+      connectionId: "conn-stale",
+      lastSeen: staleLastSeen,
+    });
+
+    const result = filterConnectionsByPresence(
+      [indeterminate, stale],
+      new Set(),
+      now,
+      new Set(["conn-indeterminate"]),
+    );
+
+    expect(result.availableConnections).toEqual([indeterminate]);
+    expect(result.staleConnections).toEqual([stale]);
+  });
 });
 
 describe("presenceHasConnectionId", () => {
@@ -716,6 +741,9 @@ describe("HybridSandboxManager reset cleanup", () => {
       persisted ? [healthy] : [unresponsive, healthy],
     );
 
+    // Quarantine backs off between attempts (1s, 2s, ...) — fake timers keep
+    // this test instant while still proving the retry sequence.
+    jest.useFakeTimers();
     try {
       const manager = new HybridSandboxManager(
         "user-1",
@@ -726,14 +754,16 @@ describe("HybridSandboxManager reset cleanup", () => {
         "pro",
       );
 
-      await expect(
-        manager.quarantineLocalConnection(
-          "conn-unresponsive",
-          "command_unresponsive",
-        ),
-      ).resolves.toBeUndefined();
+      const pending = manager.quarantineLocalConnection(
+        "conn-unresponsive",
+        "command_unresponsive",
+      );
+      await jest.advanceTimersByTimeAsync(60_000);
+      await expect(pending).resolves.toBeUndefined();
       expect(mockConvexMutation).toHaveBeenCalledTimes(3);
 
+      // Back to real timers: connection listing below must not inherit them.
+      jest.useRealTimers();
       const freshManager = new HybridSandboxManager(
         "user-1",
         jest.fn(),
@@ -744,6 +774,7 @@ describe("HybridSandboxManager reset cleanup", () => {
       );
       await expect(freshManager.listConnections()).resolves.toEqual([healthy]);
     } finally {
+      jest.useRealTimers();
       warnSpy.mockRestore();
     }
   });
@@ -761,26 +792,39 @@ describe("HybridSandboxManager reset cleanup", () => {
       "pro",
     );
 
+    // Six persistence attempts per quarantine call (1s..5s backoff) — fake
+    // timers keep this instant while proving the full retry sequence.
+    jest.useFakeTimers();
     try {
-      await expect(
-        manager.quarantineLocalConnection(
-          "conn-unresponsive",
-          "command_unresponsive",
-        ),
-      ).rejects.toThrow("Convex unavailable");
-      expect(mockConvexMutation).toHaveBeenCalledTimes(3);
-      await expect(manager.getSandbox()).rejects.toThrow(
+      // Attach rejection assertions BEFORE advancing timers: otherwise the
+      // rejection fires while no handler is attached yet and Jest reports
+      // an unhandled rejection.
+      const first = manager.quarantineLocalConnection(
+        "conn-unresponsive",
+        "command_unresponsive",
+      );
+      const firstAssert = expect(first).rejects.toThrow("Convex unavailable");
+      await jest.advanceTimersByTimeAsync(120_000);
+      await firstAssert;
+      expect(mockConvexMutation).toHaveBeenCalledTimes(6);
+
+      const sandboxAttempt = manager.getSandbox();
+      const sandboxAssert = expect(sandboxAttempt).rejects.toThrow(
         "The selected local sandbox stopped responding",
       );
+      await jest.advanceTimersByTimeAsync(120_000);
+      await sandboxAssert;
 
-      await expect(
-        manager.quarantineLocalConnection(
-          "conn-unresponsive",
-          "command_unresponsive",
-        ),
-      ).rejects.toThrow("Convex unavailable");
-      expect(mockConvexMutation).toHaveBeenCalledTimes(6);
+      const second = manager.quarantineLocalConnection(
+        "conn-unresponsive",
+        "command_unresponsive",
+      );
+      const secondAssert = expect(second).rejects.toThrow("Convex unavailable");
+      await jest.advanceTimersByTimeAsync(120_000);
+      await secondAssert;
+      expect(mockConvexMutation).toHaveBeenCalledTimes(12);
     } finally {
+      jest.useRealTimers();
       warnSpy.mockRestore();
       errorSpy.mockRestore();
     }

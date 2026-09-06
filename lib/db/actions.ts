@@ -49,18 +49,30 @@ const MAX_DATABASE_ERROR_DATA_BYTES = 4 * 1024;
 const MAX_DATABASE_ERROR_DATA_DEPTH = 3;
 const MAX_DATABASE_ERROR_DATA_ARRAY_LENGTH = 20;
 const LARGE_MESSAGE_SAVE_WARNING_BYTES = 850 * 1024;
+// Retry schedules for transient Convex failures (network blips, brief backend
+// restarts, rate limiting). Writes use a long schedule (~2min span): losing a
+// chat/message/usage write to a 1-second blip is not acceptable, and these
+// mutations are idempotent enough to safely repeat. Reads use a shorter
+// schedule so user-facing requests still fail visibly instead of hanging.
+// Deletions sit in between (background, but must not stall shutdown paths).
 const SAVE_MESSAGE_RETRY_DELAYS_MS =
-  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+  process.env.NODE_ENV === "test"
+    ? [0, 0]
+    : [250, 1000, 3000, 8000, 15000, 30000, 60000];
 const SAVE_CHAT_RETRY_DELAYS_MS =
-  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+  process.env.NODE_ENV === "test"
+    ? [0, 0]
+    : [250, 1000, 3000, 8000, 15000, 30000, 60000];
 const UPDATE_CHAT_RETRY_DELAYS_MS =
-  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+  process.env.NODE_ENV === "test"
+    ? [0, 0]
+    : [250, 1000, 3000, 8000, 15000, 30000, 60000];
 const GET_CHAT_RETRY_DELAYS_MS =
-  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000, 3000, 8000];
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
-  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000, 3000, 8000];
 const CHAT_DELETION_RETRY_DELAYS_MS =
-  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+  process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000, 3000, 8000, 15000];
 const MAX_CHAT_DELETION_FENCE_BATCHES = 50;
 const MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN = 100;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";

@@ -70,6 +70,14 @@ interface Config {
   convexUrl: string;
   token: string;
   name: string;
+  /**
+   * Explicit Centrifugo relay URL override. The Settings → Remote Control
+   * "remote machine" command passes the public (cloudflared) URL here because
+   * a remote machine cannot reach the localhost URL the server returns by
+   * default. When omitted, the client uses the server-provided primary URL
+   * and falls back to the server-provided public URL on early failure.
+   */
+  centrifugoUrl?: string;
 }
 
 interface OsInfo {
@@ -240,6 +248,8 @@ interface ConnectResult {
   connectionId?: string;
   centrifugoToken?: string;
   centrifugoWsUrl?: string;
+  /** Public relay URL for remote sandboxes; absent while tunnels are down. */
+  centrifugoPublicWsUrl?: string;
   error?: string;
 }
 
@@ -402,7 +412,19 @@ class LocalSandboxClient {
       console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
       console.log(chalk.gray(`Connection: ${this.connectionId}`));
 
-      this.setupCentrifugo(result.centrifugoWsUrl, result.centrifugoToken);
+      // URL priority: explicit --centrifugo-url flag first (the remote-machine
+      // command passes the public URL), otherwise the server primary
+      // (localhost, permanent for same-machine sandboxes). The public URL is
+      // kept as an automatic fallback so a stale command still recovers.
+      const primaryUrl = this.config.centrifugoUrl || result.centrifugoWsUrl;
+      const fallbackUrl = this.config.centrifugoUrl
+        ? undefined
+        : result.centrifugoPublicWsUrl;
+      if (primaryUrl !== result.centrifugoWsUrl) {
+        console.log(chalk.gray(`Relay: ${primaryUrl}`));
+      }
+
+      this.setupCentrifugo(primaryUrl, result.centrifugoToken, fallbackUrl);
       this.startIdleCheck();
     } catch (error: unknown) {
       const err = error as { data?: { message?: string }; message?: string };
@@ -420,7 +442,19 @@ class LocalSandboxClient {
     }
   }
 
-  private setupCentrifugo(wsUrl: string, initialToken: string): void {
+  private setupCentrifugo(
+    wsUrl: string,
+    initialToken: string,
+    fallbackWsUrl?: string,
+  ): void {
+    // One-shot automatic fallback: if the primary relay is unreachable before
+    // the first successful connection (e.g. a remote machine given a localhost
+    // URL, or a rotated tunnel hostname), switch to the public URL once
+    // instead of retrying a dead endpoint forever. Never triggers after a
+    // healthy connection — later disconnects use Centrifuge's own retry.
+    let everConnected = false;
+    let fallbackAttempted = false;
+
     this.centrifuge = new Centrifuge(wsUrl, {
       websocket: WebSocket as unknown as typeof globalThis.WebSocket,
       token: initialToken,
@@ -584,6 +618,28 @@ class LocalSandboxClient {
             chalk.yellow("Please try again later or contact support."),
           );
           this.cleanup().then(() => process.exit(1));
+        } else if (
+          !everConnected &&
+          !fallbackAttempted &&
+          fallbackWsUrl &&
+          fallbackWsUrl !== wsUrl
+        ) {
+          fallbackAttempted = true;
+          console.log(
+            chalk.yellow(
+              `⚠️  Relay unreachable at ${wsUrl}, trying public URL...`,
+            ),
+          );
+          try {
+            this.subscription?.unsubscribe();
+          } catch {}
+          try {
+            this.centrifuge?.disconnect();
+          } catch {}
+          this.centrifuge = undefined;
+          this.subscription = undefined;
+          this.publishQueue = undefined;
+          this.setupCentrifugo(fallbackWsUrl, initialToken);
         } else {
           console.log(
             chalk.yellow(`⚠️  Disconnected from Centrifugo: ${ctx.reason}`),
@@ -593,6 +649,7 @@ class LocalSandboxClient {
     });
 
     this.centrifuge.on("connected", () => {
+      everConnected = true;
       console.log(chalk.green("✓ Connected to command relay"));
     });
 
@@ -1100,15 +1157,21 @@ ${chalk.bold("HackerAI Local Sandbox Client")}
 ${chalk.yellow("Usage:")}
   npx @hackerai/local --token TOKEN [options]
 
-${chalk.yellow("Options:")}
-  --token TOKEN       Authentication token from Settings (required)
-  --name NAME         Optional connection name fallback (default: hostname)
-  --convex-url URL    Override Convex backend URL (for development)
-  --help, -h          Show this help message
+ ${chalk.yellow("Options:")}
+   --token TOKEN       Authentication token from Settings (required)
+   --name NAME         Optional connection name fallback (default: hostname)
+   --convex-url URL    Override Convex backend URL (for development, or the
+                       public tunnel URL when connecting a remote machine)
+   --centrifugo-url URL
+                       Override Centrifugo relay URL (remote machines must use
+                       the public wss:// URL from Settings → Remote Control;
+                       localhost only works on the same machine)
+   --help, -h          Show this help message
 
-${chalk.yellow("Examples:")}
-  npx @hackerai/local --token hsb_abc123
-  npx @hackerai/local --token hsb_abc123 --name "Work PC"
+ ${chalk.yellow("Examples:")}
+   npx @hackerai/local --token hsb_abc123
+   npx @hackerai/local --token hsb_abc123 --name "Work PC"
+   npx @hackerai/local --token hsb_abc123 --convex-url https://xyz.trycloudflare.com --centrifugo-url wss://abc.trycloudflare.com/connection/websocket
 
 ${chalk.red("⚠️  Security Warning:")}
   Commands run directly on your OS without any isolation.
@@ -1125,6 +1188,7 @@ const config: Config = {
   convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
   token: getArg("--token") || "",
   name: getArg("--name") || os.hostname(),
+  centrifugoUrl: getArg("--centrifugo-url") || undefined,
 };
 
 if (!config.token) {

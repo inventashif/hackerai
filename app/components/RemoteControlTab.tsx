@@ -17,7 +17,11 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
-import { runCommand, convexUrlFlag } from "@/lib/utils/sandbox-command";
+import {
+  MIN_REMOTE_CLIENT_VERSION,
+  buildLocalSandboxCommand,
+  buildRemoteSandboxCommand,
+} from "@/lib/utils/sandbox-command";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import type {
   ChatMode,
@@ -155,10 +159,36 @@ function useAutoSelectNewRemoteConnection({
   ]);
 }
 
+interface SandboxConnectInfo {
+  localConvexUrl: string;
+  localCentrifugoWsUrl: string;
+  publicConvexUrl: string;
+  publicCentrifugoWsUrl: string;
+  tunnelsReady: boolean;
+}
+
 const RemoteControlTab = () => {
   const [showToken, setShowToken] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [isLoadingToken, setIsLoadingToken] = useState(false);
+  const [connectInfo, setConnectInfo] = useState<SandboxConnectInfo | null>(
+    null,
+  );
+
+  // Public tunnel hostnames rotate on every cloudflared restart, so they are
+  // fetched live from the server instead of being baked into the bundle.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/sandbox/connect-info", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setConnectInfo(data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const {
     chatMode,
@@ -373,15 +403,70 @@ const RemoteControlTab = () => {
         </h4>
 
         <CommandBlock
-          label="Connect Machine"
+          label="This machine — local backend, shared relay"
           warning
-          command={`${runCommand} --token ${showToken && token ? token : "<token>"}${convexUrlFlag}`}
+          command={buildLocalSandboxCommand(
+            showToken && token ? token : "<token>",
+          )}
           onCopy={() =>
-            handleCopyCommand(
-              `${runCommand} --token ${token || "YOUR_TOKEN"}${convexUrlFlag}`,
-            )
+            handleCopyCommand(buildLocalSandboxCommand(token || "YOUR_TOKEN"))
           }
         />
+
+        {(() => {
+          const remoteCommand =
+            connectInfo &&
+            buildRemoteSandboxCommand(
+              showToken && token ? token : "<token>",
+              connectInfo.publicConvexUrl,
+              connectInfo.publicCentrifugoWsUrl,
+            );
+          const remoteCopyCommand =
+            connectInfo &&
+            buildRemoteSandboxCommand(
+              token || "YOUR_TOKEN",
+              connectInfo.publicConvexUrl,
+              connectInfo.publicCentrifugoWsUrl,
+            );
+          return (
+            <div className="space-y-1.5">
+              <CommandBlock
+                label="Remote machine — public tunnel callback"
+                warning
+                command={
+                  remoteCommand ??
+                  (connectInfo
+                    ? "Starting public tunnel — refresh in a few seconds…"
+                    : "Loading tunnel status…")
+                }
+                onCopy={() =>
+                  remoteCopyCommand
+                    ? handleCopyCommand(remoteCopyCommand)
+                    : toast.error("Public tunnel is not ready yet")
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                {connectInfo?.tunnelsReady ? (
+                  <>
+                    Tunnel live{" "}
+                    <span className="text-green-600 dark:text-green-400">
+                      ●
+                    </span>{" "}
+                    — remote machines connect through the public callback
+                    (needs @hackerai/local ≥ {MIN_REMOTE_CLIENT_VERSION}). The
+                    address changes when the tunnel restarts; copy a fresh
+                    command if a remote sandbox stops connecting.
+                  </>
+                ) : (
+                  <>
+                    A remote machine cannot reach localhost, so it gets a
+                    public cloudflared callback instead. Waiting for the tunnel…
+                  </>
+                )}
+              </p>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Security Notice - Compact */}

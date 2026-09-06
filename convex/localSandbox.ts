@@ -214,6 +214,11 @@ export const connect = mutation({
     connectionId: v.optional(v.string()),
     centrifugoToken: v.optional(v.string()),
     centrifugoWsUrl: v.optional(v.string()),
+    // Public (cloudflared) relay URL. Currently identical to centrifugoWsUrl:
+    // one shared relay for local and remote sandboxes, so older clients that
+    // only read centrifugoWsUrl keep working from any machine. Omitted when
+    // the public tunnels are down.
+    centrifugoPublicWsUrl: v.optional(v.string()),
     error: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
@@ -232,6 +237,8 @@ export const connect = mutation({
     if (!centrifugoWsUrl) {
       return { success: false, error: "Centrifugo not configured" };
     }
+    const centrifugoPublicWsUrl =
+      process.env.CENTRIFUGO_PUBLIC_WS_URL || undefined;
 
     const connectionId = crypto.randomUUID();
 
@@ -257,6 +264,7 @@ export const connect = mutation({
       connectionId,
       centrifugoToken,
       centrifugoWsUrl,
+      ...(centrifugoPublicWsUrl ? { centrifugoPublicWsUrl } : {}),
     };
   },
 });

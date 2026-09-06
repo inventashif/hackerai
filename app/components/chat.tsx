@@ -1114,35 +1114,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   );
   shouldUseAgentLongForCurrentChatRef.current =
     shouldUseAgentLongForCurrentChat;
-  const stopActiveBrowserStream = useCallback(
-    (nextChatId?: string) => {
-      const streamChatId = streamChatIdRef.current;
-      if (nextChatId) {
-        // Invalidate terminal callbacks before either cancellation path can
-        // finish synchronously.
-        activeChatIdRef.current = nextChatId;
-      }
-      cancelAgentLongRealtimeStreams(streamChatId);
-      const streamAlreadyFinished =
-        shouldUseAgentLongForCurrentChatRef.current &&
-        browserStreamFinishedRef.current;
-      if (
-        !streamAlreadyFinished &&
-        (statusRef.current === "streaming" || statusRef.current === "submitted")
-      ) {
-        stopRef.current();
-      }
-      setDataStream([]);
-      setIsAutoResuming(false);
-    },
-    [setDataStream, setIsAutoResuming],
-  );
-
-  useEffect(() => {
-    setChatNavigationHandler(stopActiveBrowserStream);
-    return () => setChatNavigationHandler(null);
-  }, [setChatNavigationHandler, stopActiveBrowserStream]);
-
   const saveAgentLongPartialSnapshot = useCallback(
     (clientReason: string) => {
       const partialMessage = getLatestAgentLongAssistantMessageForPartialSave(
@@ -1183,6 +1154,43 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     },
     [chatId],
   );
+
+  const stopActiveBrowserStream = useCallback(
+    (nextChatId?: string) => {
+      const streamChatId = streamChatIdRef.current;
+      const isAgentLong = shouldUseAgentLongForCurrentChatRef.current;
+      const wasStreaming =
+        statusRef.current === "streaming" || statusRef.current === "submitted";
+
+      // For durable Agent runs, save the partial assistant message before
+      // detaching so the user sees accumulated progress when they return.
+      if (isAgentLong && wasStreaming && !browserStreamFinishedRef.current) {
+        saveAgentLongPartialSnapshot("chat_navigation");
+      }
+
+      if (nextChatId) {
+        // Invalidate terminal callbacks before either cancellation path can
+        // finish synchronously.
+        activeChatIdRef.current = nextChatId;
+      }
+      cancelAgentLongRealtimeStreams(streamChatId);
+      const streamAlreadyFinished = isAgentLong && browserStreamFinishedRef.current;
+      if (
+        !streamAlreadyFinished &&
+        wasStreaming
+      ) {
+        stopRef.current();
+      }
+      setDataStream([]);
+      setIsAutoResuming(false);
+    },
+    [saveAgentLongPartialSnapshot, setDataStream, setIsAutoResuming],
+  );
+
+  useEffect(() => {
+    setChatNavigationHandler(stopActiveBrowserStream);
+    return () => setChatNavigationHandler(null);
+  }, [setChatNavigationHandler, stopActiveBrowserStream]);
 
   useEffect(() => {
     if (status === "submitted") {
@@ -1258,6 +1266,35 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       stopActiveBrowserStream();
     };
   }, [stopActiveBrowserStream]);
+
+  // Save partial agent progress when the user closes/refreshes the tab or
+  // switches away (e.g. mobile tab switch). The Trigger.dev task keeps
+  // running server-side; this ensures the accumulated assistant message is
+  // persisted so useAutoResume can display it immediately on return.
+  useEffect(() => {
+    const saveOnExit = () => {
+      if (
+        shouldUseAgentLongForCurrentChatRef.current &&
+        !browserStreamFinishedRef.current &&
+        (statusRef.current === "streaming" || statusRef.current === "submitted")
+      ) {
+        saveAgentLongPartialSnapshot("beforeunload");
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        saveOnExit();
+      }
+    };
+
+    window.addEventListener("beforeunload", saveOnExit);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("beforeunload", saveOnExit);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [saveAgentLongPartialSnapshot]);
 
   const agentLongMessageFingerprint =
     getAgentLongMessageProgressFingerprint(messages);

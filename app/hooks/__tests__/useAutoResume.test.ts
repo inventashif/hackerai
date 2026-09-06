@@ -138,6 +138,7 @@ describe("useAutoResume", () => {
     const resumeStream = jest.fn();
     let params = buildParams({
       resumeStream,
+      hasActiveStream: false,
       initialMessages: [message("assistant-1", "assistant")],
     });
 
@@ -203,5 +204,42 @@ describe("useAutoResume", () => {
     rerender(params);
 
     expect(resumeStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes when the last message is assistant but the stream is still active", () => {
+    const resumeStream = jest.fn();
+    const params = buildParams({
+      resumeStream,
+      hasActiveStream: true,
+      initialMessages: [
+        message("user-1", "user"),
+        message("assistant-1", "assistant"),
+      ],
+    });
+
+    const { result } = renderHook(() => useTestHarness(params), {
+      wrapper: createWrapper(),
+    });
+
+    expect(resumeStream).toHaveBeenCalledTimes(1);
+    expect(result.current.isAutoResuming).toBe(true);
+  });
+
+  it("does not resume when the last message is assistant and no active stream", () => {
+    const resumeStream = jest.fn();
+    const params = buildParams({
+      resumeStream,
+      hasActiveStream: false,
+      initialMessages: [
+        message("user-1", "user"),
+        message("assistant-1", "assistant"),
+      ],
+    });
+
+    renderHook(() => useTestHarness(params), {
+      wrapper: createWrapper(),
+    });
+
+    expect(resumeStream).not.toHaveBeenCalled();
   });
 });

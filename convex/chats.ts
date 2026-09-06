@@ -2002,6 +2002,25 @@ export const saveLatestSummary = mutation({
         return null;
       }
 
+      // Refuse to persist an empty summary.
+      //
+      // Writing one is doubly destructive: the row itself carries no context,
+      // and the insert path below deletes the previous (good) summary. A caller
+      // that somehow produces empty text must degrade to "keep the existing
+      // summary", never "replace it with nothing". Defense in depth — the
+      // generation path also rejects empty summaries — because a stale deployed
+      // worker can still call this mutation.
+      if (args.summaryText.trim().length === 0) {
+        convexLogger.warn("chat_summary_empty_save_skipped", {
+          service: "convex",
+          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+          chat_id: args.chatId,
+          summary_up_to_message_id: args.summaryUpToMessageId,
+          previous_summary_id: chat.latest_summary_id,
+        });
+        return null;
+      }
+
       // Log sizes to help diagnose document limit issues
       const summaryTextSizeKB = Math.round(
         new TextEncoder().encode(args.summaryText).length / 1024,

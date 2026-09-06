@@ -30,7 +30,16 @@ Commands run directly on your host OS. The client connects to HackerAI and relay
 | `--token TOKEN`    | Authentication token from HackerAI Settings (required) |
 | `--name NAME`      | Optional connection name fallback (default: hostname)  |
 | `--convex-url URL` | Override backend URL (for development)                 |
+| `--centrifugo-url URL` | Override relay URL — remote machines must use the public `wss://` URL from Settings → Remote Control (localhost only works on the same machine) |
 | `--help, -h`       | Show help message                                      |
+
+## Connecting a remote machine
+
+A machine other than the one running HackerAI cannot reach `localhost`. In
+HackerAI go to Settings → Remote Control and copy the **Remote machine**
+command — it points both `--convex-url` and `--centrifugo-url` at the public
+cloudflared callback. Without `--centrifugo-url` the client still recovers by
+falling back to the server-provided public relay URL on early failure.
 
 ## Getting Your Token
 

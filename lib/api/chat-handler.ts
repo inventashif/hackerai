@@ -143,6 +143,11 @@ import {
 } from "@/lib/utils/local-attachment-messages";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
+import { createResumableStreamContext as createGenericResumableStreamContext } from "resumable-stream/generic";
+import {
+  createInMemoryPublisher,
+  createInMemorySubscriber,
+} from "@/lib/api/resumable-stream-memory";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
@@ -216,7 +221,19 @@ function getStreamContext() {
   try {
     return createResumableStreamContext({ waitUntil: after });
   } catch (_) {
-    return null;
+    // Redis is not available (no REDIS_URL / KV_URL). Fall back to an
+    // in-memory pub/sub adapter so resumable streams still work in local
+    // development. Data lives in process memory and is lost on restart,
+    // but agent runs survive chat switches within the same dev session.
+    try {
+      return createGenericResumableStreamContext({
+        waitUntil: after,
+        publisher: createInMemoryPublisher(),
+        subscriber: createInMemorySubscriber(),
+      });
+    } catch (_inner) {
+      return null;
+    }
   }
 }
 

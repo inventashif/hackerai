@@ -200,16 +200,19 @@ export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 
-// Known Zen free models (fallback when API unavailable)
+// Known Zen free models (fallback when API unavailable).
+// Synced 2026-09-05 against GET /api/zen/models: hy3-free,
+// laguna-s-2.1-free and x-preview-f-free were removed by the provider
+// (requests 401) and ling-3.0-flash-fin-free / muse-spark-1.3-contributor-free
+// were added. Re-check the live list if a "-free" model starts 401ing.
 export const KNOWN_ZEN_FREE_MODELS = [
   "deepseek-v4-flash-free",
-  "hy3-free",
-  "laguna-s-2.1-free",
+  "ling-3.0-flash-fin-free",
   "mimo-v2.5-free",
   "muse-spark-1.2-contributor-free",
+  "muse-spark-1.3-contributor-free",
   "nemotron-3-ultra-free",
   "nemotron-3.5-lightning-free",
-  "x-preview-f-free",
   "big-pickle",
 ] as const;
 
@@ -394,13 +397,10 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "auxiliary-vision-model": "January 2025",
   // Zen free models
   "deepseek-v4-flash-free": "July 2026",
-  "hy3-free": "August 2026",
-  "laguna-s-2.1-free": "August 2026",
   "mimo-v2.5-free": "January 2025",
   "muse-spark-1.2-contributor-free": "August 2026",
   "nemotron-3-ultra-free": "August 2026",
   "nemotron-3.5-lightning-free": "August 2026",
-  "x-preview-f-free": "August 2026",
   "big-pickle": "August 2026",
   // Kiro models, derived from the catalog so that adding a model there (or
   // picking up a new one from the gateway) stays in sync automatically.
@@ -432,13 +432,10 @@ export const modelDisplayNames: Record<ModelName, string> &
   "auxiliary-vision-model": "Auxiliary vision model",
   // Zen free models (display names for ModelSelector)
   "deepseek-v4-flash-free": "DeepSeek V4 Flash (Free)",
-  "hy3-free": "Hy3 (Free)",
-  "laguna-s-2.1-free": "Laguna S 2.1 (Free)",
   "mimo-v2.5-free": "MiMo V2.5 (Free)",
   "muse-spark-1.2-contributor-free": "Muse Spark 1.2 (Free)",
   "nemotron-3-ultra-free": "Nemotron 3 Ultra (Free)",
   "nemotron-3.5-lightning-free": "Nemotron 3.5 Lightning (Free)",
-  "x-preview-f-free": "X Preview F (Free)",
   "big-pickle": "Big Pickle (Free)",
   // Kiro models, derived from the catalog (see `modelCutoffDates` above).
   ...Object.fromEntries(

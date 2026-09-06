@@ -719,6 +719,21 @@ const getLanguageModelIdentifier = (
   return undefined;
 };
 
+const EMPTY_SUMMARY_ERROR_KEY = "__hackeraiEmptySummary";
+
+/** Tags an error as "the model returned no summary text" so the retry path can act on it. */
+export const markEmptySummaryError = (error: Error): Error => {
+  (error as unknown as Record<string, unknown>)[EMPTY_SUMMARY_ERROR_KEY] = true;
+  return error;
+};
+
+export const isEmptySummaryError = (error: unknown): boolean =>
+  Boolean(
+    error &&
+      typeof error === "object" &&
+      (error as Record<string, unknown>)[EMPTY_SUMMARY_ERROR_KEY] === true,
+  );
+
 export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
   languageModel: LanguageModel,
@@ -783,6 +798,21 @@ export const generateSummaryText = async (
       },
     ],
   });
+
+  // A provider can return HTTP 200 with no text at all: reasoning-only output,
+  // a truncated stream, or a soft refusal. Treating that as a valid summary is
+  // actively destructive, because downstream we would (1) persist an empty
+  // chat_summaries row, (2) delete the previous good summary, and (3) compact
+  // the conversation down to a summary carrying zero context — which is what
+  // leaves the next request with only user turns and no assistant history.
+  //
+  // Fail loudly instead: the retry/fallback path gets a chance, and a total
+  // failure degrades to "no compaction this turn" rather than "context erased".
+  if (result.text.trim().length === 0) {
+    throw markEmptySummaryError(
+      new Error("Summarization produced an empty summary"),
+    );
+  }
 
   const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
   const details = (

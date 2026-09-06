@@ -87,7 +87,16 @@ export function useAutoResume({
 
     const mostRecentMessage = initialMessages.at(-1);
 
-    if (mostRecentMessage?.role === "user") {
+    // Resume when the last message is from the user (server started but no
+    // assistant response persisted yet) OR when the server reports an active
+    // stream regardless of the last message role. The latter covers the case
+    // where a partial assistant snapshot was saved during chat navigation —
+    // the Trigger.dev run is still executing and the durable stream replays
+    // from the beginning on reconnect.
+    if (
+      mostRecentMessage?.role === "user" ||
+      (hasActiveStream && mostRecentMessage?.role === "assistant")
+    ) {
       hasAutoResumedRef.current = true;
       setIsAutoResuming(true);
       resumeStream();

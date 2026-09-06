@@ -58,11 +58,24 @@ export interface SandboxFallbackInfo {
 // connection-only and never kills the shared per-user sandbox.
 const MAX_SANDBOX_HEALTH_FAILURES = 2;
 export { LOCAL_SANDBOX_PRESENCE_GRACE_MS };
-const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
+// Budget for a single channel's subscribe+presence round trip, measured from
+// AFTER the WebSocket is connected. The old 2s value was measured from before
+// `client.connect()`, so the TCP+WS+auth handshake ate the whole budget and
+// every probe failed at ~2.0s ("Centrifugo presence timeout for connection ..."),
+// which silently disabled stale-connection filtering.
+const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 5_000;
+// Separate budget for establishing the probe connection itself.
+const LOCAL_SANDBOX_PRESENCE_CONNECT_TIMEOUT_MS = 5_000;
 
 interface PresenceProbeResult {
   reliable: boolean;
   onlineConnectionIds: Set<string>;
+  /**
+   * Connections whose individual probe failed while the overall probe still
+   * succeeded. These are NOT known to be offline, so they must never be
+   * treated as stale or disconnected.
+   */
+  indeterminateConnectionIds?: Set<string>;
   durationMs: number;
   error?: unknown;
 }
@@ -103,6 +116,12 @@ export function filterConnectionsByPresence(
   connections: ConnectionInfo[],
   onlineConnectionIds: Set<string>,
   now = Date.now(),
+  /**
+   * Connections whose presence probe failed. They are kept as available: a
+   * failed probe proves nothing about the client, and disconnecting on it
+   * would kill a live sandbox belonging to another tab or session.
+   */
+  indeterminateConnectionIds: Set<string> = new Set(),
 ): PresenceFilterResult {
   const availableConnections: ConnectionInfo[] = [];
   const staleConnections: ConnectionInfo[] = [];
@@ -111,7 +130,11 @@ export function filterConnectionsByPresence(
     const recentlySeen =
       connection.lastSeen != null &&
       now - connection.lastSeen <= LOCAL_SANDBOX_PRESENCE_GRACE_MS;
-    if (onlineConnectionIds.has(connection.connectionId) || recentlySeen) {
+    if (
+      onlineConnectionIds.has(connection.connectionId) ||
+      indeterminateConnectionIds.has(connection.connectionId) ||
+      recentlySeen
+    ) {
       availableConnections.push(connection);
     } else {
       staleConnections.push(connection);
@@ -151,11 +174,49 @@ async function queryLiveSandboxConnectionIds(
     const token = await generateCentrifugoToken(userId, 30);
     client = new Centrifuge(wsUrl, { token });
     const onlineConnectionIds = new Set<string>();
+    const indeterminateConnectionIds = new Set<string>();
 
+    // Establish the transport BEFORE arming the per-channel deadlines, so a
+    // slow handshake can no longer consume the entire presence budget.
+    const connectedClient = client;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanupConnectListeners();
+        reject(new Error("Centrifugo presence connect timeout"));
+      }, LOCAL_SANDBOX_PRESENCE_CONNECT_TIMEOUT_MS);
+
+      const cleanupConnectListeners = () => {
+        clearTimeout(timer);
+        connectedClient.removeListener("connected", onConnected);
+        connectedClient.removeListener("error", onError);
+      };
+      const onConnected = () => {
+        cleanupConnectListeners();
+        resolve();
+      };
+      const onError = (ctx: { error?: { message?: string } }) => {
+        cleanupConnectListeners();
+        reject(
+          new Error(ctx.error?.message ?? "Centrifugo presence connect error"),
+        );
+      };
+
+      connectedClient.on("connected", onConnected);
+      connectedClient.on("error", onError);
+      connectedClient.connect();
+    });
+
+    // One probe per connection, each independently settled.
+    //
+    // This used to be `Promise.all`, which made the probe all-or-nothing: with
+    // several tabs/sessions open, a single unresponsive channel rejected the
+    // whole batch and marked presence `reliable: false`, so stale-connection
+    // filtering was skipped for every connection. Now a failed probe only makes
+    // THAT connection indeterminate.
     const probes = connectionIds.map(
       (connectionId) =>
         new Promise<void>((resolve, reject) => {
-          const sub = client!.newSubscription(
+          const sub = connectedClient.newSubscription(
             sandboxConnectionChannel(userId, connectionId),
           );
           subscriptions.push(sub);
@@ -199,12 +260,29 @@ async function queryLiveSandboxConnectionIds(
         }),
     );
 
-    client.connect();
-    await Promise.all(probes);
+    const settled = await Promise.allSettled(probes);
+    settled.forEach((outcome, index) => {
+      if (outcome.status === "rejected") {
+        // Absence of proof is not proof of absence: never disconnect a
+        // connection just because its probe failed.
+        indeterminateConnectionIds.add(connectionIds[index]);
+      }
+    });
+
+    if (indeterminateConnectionIds.size > 0) {
+      logStructured("warn", "local_sandbox_presence_partial", {
+        user_id: userId,
+        connection_count: connectionIds.length,
+        online_connection_count: onlineConnectionIds.size,
+        indeterminate_connection_count: indeterminateConnectionIds.size,
+        duration_ms: Date.now() - start,
+      });
+    }
 
     return {
       reliable: true,
       onlineConnectionIds,
+      indeterminateConnectionIds,
       durationMs: Date.now() - start,
     };
   } catch (error) {
@@ -302,7 +380,10 @@ export class HybridSandboxManager implements SandboxManager {
       });
     }
 
-    const maxAttempts = 3;
+    // Persist through Convex blips: the in-memory quarantine above already
+    // reroutes this run, but without the persisted row a fresh manager would
+    // resurrect the dead connection. Six attempts over ~15s before surfacing.
+    const maxAttempts = 6;
     let lastError: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -316,7 +397,7 @@ export class HybridSandboxManager implements SandboxManager {
       } catch (error) {
         lastError = error;
         if (attempt < maxAttempts) {
-          const retryDelayMs = attempt * 500;
+          const retryDelayMs = attempt * 1000;
           logStructured("warn", "local_sandbox_connection_quarantine_retry", {
             service: this.requestId ? "agent-long" : "chat-handler",
             request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
@@ -516,7 +597,12 @@ export class HybridSandboxManager implements SandboxManager {
       }
 
       const { availableConnections, staleConnections } =
-        filterConnectionsByPresence(connections, presence.onlineConnectionIds);
+        filterConnectionsByPresence(
+          connections,
+          presence.onlineConnectionIds,
+          Date.now(),
+          presence.indeterminateConnectionIds,
+        );
 
       if (staleConnections.length > 0) {
         logStructured("warn", "local_sandbox_stale_connections_filtered", {

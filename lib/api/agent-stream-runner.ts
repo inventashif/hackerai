@@ -938,6 +938,12 @@ export async function createAgentStream(
 
   return streamText({
     model: getNamespacedLanguageModel(initialModelInfo.languageModel, 0),
+    // Persist through transient provider failures (5xx, 429 rate limits,
+    // connection resets) instead of killing a multi-minute agent turn after
+    // the SDK default of 3 attempts. Only retryable errors are retried, with
+    // exponential backoff and honoring Retry-After; turn-level guards
+    // (elapsed timeout, doom-loop, budget caps) still bound total runtime.
+    maxRetries: 10,
     maxOutputTokens,
     system: buildSystemPrompt(
       ctx.currentSystemPrompt,
