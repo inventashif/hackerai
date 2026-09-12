@@ -57,7 +57,7 @@ import {
   getDefaultModelForMode,
   type ModelOption,
 } from "./ModelSelector/constants";
-import { isKiroModel, isZenModel } from "@/types/chat";
+import { isKiroModel, isLovableModel, isZenModel } from "@/types/chat";
 
 // ── Kiro models (fetched from the local Kiro Gateway via /api/kiro/status) ──
 function useKiroModels(open: boolean, enabled: boolean) {
@@ -109,17 +109,65 @@ function useKiroModels(open: boolean, enabled: boolean) {
   return { models, loading };
 }
 
+function useLovableModels(open: boolean, enabled: boolean) {
+  const [models, setModels] = useState<ModelOption[] | null>(null);
+
+  useEffect(() => {
+    if (!open || !enabled || models !== null) return;
+    let cancelled = false;
+    fetch("/api/lovable/status")
+      .then((r) =>
+        r.ok ? r.json() : Promise.reject(new Error(String(r.status))),
+      )
+      .then(
+        (json: {
+          available?: boolean;
+          models?: {
+            id: string;
+            modelId: string;
+            name: string;
+            supportsThinking: boolean;
+          }[];
+        }) => {
+          if (cancelled) return;
+          if (!json.available) {
+            setModels([]);
+            return;
+          }
+          const list = Array.isArray(json.models) ? json.models : [];
+          setModels(
+            list.map((model) => ({
+              id: model.id as SelectedModel,
+              label: model.name.replace(/\s*\(Lovable\)$/, ""),
+              description: "Via Lovable AI Gateway",
+              poweredBy: model.modelId,
+              thinking: model.supportsThinking,
+            })),
+          );
+        },
+      )
+      .catch(() => {
+        if (!cancelled) setModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, enabled, models]);
+
+  return { models, loading: open && enabled && models === null };
+}
+
 // ── Zen free models (fetched from /api/zen/models like `opencode zen`) ──
 function useZenFreeModels(open: boolean) {
   const [models, setModels] = useState<ModelOption[] | null>(null);
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!open || models !== null) return;
     let cancelled = false;
-    setLoading(true);
     fetch("/api/zen/models")
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((r) =>
+        r.ok ? r.json() : Promise.reject(new Error(String(r.status))),
+      )
       .then((json: { data?: { id: string }[] }) => {
         if (cancelled) return;
         const list = Array.isArray(json.data) ? json.data : [];
@@ -142,14 +190,16 @@ function useZenFreeModels(open: boolean) {
       })
       .catch(() => {
         if (!cancelled) setModels([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, [open, models]);
+
+  // Derived rather than a second piece of state (see `useKiroModels` above):
+  // avoids calling setState synchronously inside the effect, which triggers
+  // a cascading re-render (react-hooks/set-state-in-effect).
+  const loading = open && models === null;
 
   return { models, loading };
 }
@@ -393,6 +443,8 @@ const ModelOptionList = ({
   zenModelsLoading,
   kiroModels,
   kiroModelsLoading,
+  lovableModels,
+  lovableModelsLoading,
 }: {
   options: ModelOption[];
   value: SelectedModel;
@@ -409,6 +461,8 @@ const ModelOptionList = ({
   zenModelsLoading?: boolean;
   kiroModels?: ModelOption[] | null;
   kiroModelsLoading?: boolean;
+  lovableModels?: ModelOption[] | null;
+  lovableModelsLoading?: boolean;
 }) => (
   <div className="flex flex-col gap-px">
     {isFreeUser ? (
@@ -608,6 +662,37 @@ const ModelOptionList = ({
         </div>
       </>
     ) : null}
+
+    {lovableModels && lovableModels.length > 0 ? (
+      <>
+        <div className="my-1 border-b border-border/50" />
+        <div className="px-2 pt-1 pb-0.5">
+          <span className="text-[11px] font-semibold tracking-widest text-muted-foreground/70">
+            LOVABLE AI
+          </span>
+        </div>
+        {lovableModels.map((option) => (
+          <div key={option.id}>
+            <ModelOptionButton
+              option={option}
+              isSelected={value === option.id}
+              isLocked={false}
+              isPending={false}
+              subscription={subscription}
+              onSelect={onSelect}
+              mobile={mobile}
+            />
+          </div>
+        ))}
+      </>
+    ) : lovableModelsLoading ? (
+      <>
+        <div className="my-1 border-b border-border/50" />
+        <div className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" /> Loading Lovable models…
+        </div>
+      </>
+    ) : null}
   </div>
 );
 
@@ -641,14 +726,20 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       : (normalizeMaxModelForSubscription(subscriptionValue, subscription, {
           extraUsageAvailable: maxModelExtraUsageAvailable,
         }) ?? "auto");
-  // Zen free and Kiro models are direct selections — treat them as non-auto
+  // Zen, Kiro, and Lovable models are direct selections — treat them as non-auto
   const isZenSelected = isZenModel(displayValue);
   const isKiroSelected = isKiroModel(displayValue);
-  const isAuto = displayValue === "auto" && !isZenSelected && !isKiroSelected;
+  const isLovableSelected = isLovableModel(displayValue);
+  const isAuto =
+    displayValue === "auto" &&
+    !isZenSelected &&
+    !isKiroSelected &&
+    !isLovableSelected;
 
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
 
-  const { models: zenModels, loading: zenModelsLoading } = useZenFreeModels(open);
+  const { models: zenModels, loading: zenModelsLoading } =
+    useZenFreeModels(open);
   // Free users are routed to the auto router regardless of selection
   // (see `selectModel` in lib/chat/chat-processor.ts), so don't offer Kiro
   // to them or spend a request fetching the catalog.
@@ -656,16 +747,22 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     open,
     !isFreeUser,
   );
+  const { models: lovableModels, loading: lovableModelsLoading } =
+    useLovableModels(open, !isFreeUser);
 
   const effectiveValue = isAuto ? getDefaultModelForMode(mode) : displayValue;
-  // Resolve selected label from tier options, or the zen / kiro lists
+  // Resolve selected label from tier options, or gateway lists
   const selectedFromTier = options.find((opt) => opt.id === effectiveValue);
   const selectedFromZen = zenModels?.find((opt) => opt.id === effectiveValue);
   const selectedFromKiro = kiroModels?.find((opt) => opt.id === effectiveValue);
+  const selectedFromLovable = lovableModels?.find(
+    (opt) => opt.id === effectiveValue,
+  );
   const selected =
     selectedFromTier ??
     selectedFromZen ??
     selectedFromKiro ??
+    selectedFromLovable ??
     (isZenSelected
       ? {
           id: effectiveValue,
@@ -688,7 +785,17 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               .join(" "),
             poweredBy: effectiveValue.replace(/^kiro-/, ""),
           }
-        : options[0]);
+        : isLovableSelected
+          ? {
+              id: effectiveValue,
+              label: effectiveValue
+                .replace(/^lovable-/, "")
+                .split("-")
+                .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                .join(" "),
+              poweredBy: effectiveValue.replace(/^lovable-/, ""),
+            }
+          : options[0]);
 
   const isFreeAgent = isFreeUser && isAgentMode(mode);
   const triggerLabel = isFreeAgent
@@ -824,6 +931,8 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               zenModelsLoading={zenModelsLoading}
               kiroModels={kiroModels}
               kiroModelsLoading={kiroModelsLoading}
+              lovableModels={lovableModels}
+              lovableModelsLoading={lovableModelsLoading}
             />
           </SheetContent>
         </Sheet>
@@ -836,7 +945,10 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     <>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-        <PopoverContent className="w-[270px] p-1.5 rounded-xl max-h-[70vh] overflow-y-auto" align="start">
+        <PopoverContent
+          className="w-[270px] p-1.5 rounded-xl max-h-[70vh] overflow-y-auto"
+          align="start"
+        >
           <ModelOptionList
             options={options}
             value={displayValue}
@@ -852,6 +964,8 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             zenModelsLoading={zenModelsLoading}
             kiroModels={kiroModels}
             kiroModelsLoading={kiroModelsLoading}
+            lovableModels={lovableModels}
+            lovableModelsLoading={lovableModelsLoading}
           />
         </PopoverContent>
       </Popover>

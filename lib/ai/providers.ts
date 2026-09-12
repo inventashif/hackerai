@@ -13,6 +13,15 @@ import {
   KIRO_MODEL_KEYS,
   KIRO_MODELS,
 } from "./providers/kiro-models";
+import { createLovableProvider } from "./providers/lovable";
+import {
+  getLovableModelName,
+  isLovableModelKey,
+  LOVABLE_DEFAULT_CUTOFF,
+  LOVABLE_MODEL_KEYS,
+  LOVABLE_MODELS,
+  lovableModelUsesResponsesApi,
+} from "./providers/lovable-models";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -241,9 +250,13 @@ const resolveZenModelId = (openRouterSlug: string): string => {
     configured ||
     DEFAULT_ZEN_MODEL;
   const pro =
-    process.env.OPENCODE_ZEN_MODEL_PRO?.trim() || configured || DEFAULT_ZEN_MODEL;
+    process.env.OPENCODE_ZEN_MODEL_PRO?.trim() ||
+    configured ||
+    DEFAULT_ZEN_MODEL;
   const max =
-    process.env.OPENCODE_ZEN_MODEL_MAX?.trim() || configured || DEFAULT_ZEN_MODEL;
+    process.env.OPENCODE_ZEN_MODEL_MAX?.trim() ||
+    configured ||
+    DEFAULT_ZEN_MODEL;
   const vision =
     process.env.OPENCODE_ZEN_MODEL_VISION?.trim() || "mimo-v2.5-free";
 
@@ -277,8 +290,10 @@ const zenPatchFetch: typeof fetch = async (url, init) => {
   if (!auth || auth === "Bearer " || auth === "Bearer") {
     headers.set("Authorization", "Bearer public");
   }
-  if (!headers.has("x-opencode-client")) headers.set("x-opencode-client", "cli");
-  if (!headers.has("x-opencode-project")) headers.set("x-opencode-project", "global");
+  if (!headers.has("x-opencode-client"))
+    headers.set("x-opencode-client", "cli");
+  if (!headers.has("x-opencode-project"))
+    headers.set("x-opencode-project", "global");
   if (!headers.has("x-opencode-request")) {
     headers.set("x-opencode-request", `msg_${randomBytes(16).toString("hex")}`);
   }
@@ -353,19 +368,26 @@ const buildProviderMap = (
 
 // Add direct Zen free model entries for explicit user selection (e.g., via ModelSelector)
 const buildZenFreeProviders = (or: LanguageModelFactory) =>
-  Object.fromEntries(
-    KNOWN_ZEN_FREE_MODELS.map((id) => [id, or(id)]),
-  ) as Record<string, any>;
+  Object.fromEntries(KNOWN_ZEN_FREE_MODELS.map((id) => [id, or(id)])) as Record<
+    string,
+    any
+  >;
 
 const kiroFactory = createKiroProvider();
 const kiroProviders = Object.fromEntries(
   Object.keys(KIRO_MODELS).map((k) => [k, kiroFactory(k)]),
 ) as Record<string, any>;
 
+const lovableFactory = createLovableProvider();
+const lovableProviders = Object.fromEntries(
+  Object.keys(LOVABLE_MODELS).map((k) => [k, lovableFactory(k)]),
+) as Record<string, any>;
+
 const baseProviders = {
   ...buildProviderMap(createLanguageModelFactory()),
   ...buildZenFreeProviders(createLanguageModelFactory()),
   ...kiroProviders,
+  ...lovableProviders,
 } as Record<string, any>;
 
 // Also handle any future free models dynamically (e.g., new -free suffix)
@@ -407,6 +429,10 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   ...Object.fromEntries(
     KIRO_MODEL_KEYS.map((key) => [key, KIRO_DEFAULT_CUTOFF]),
   ),
+  // Lovable models, derived from the catalog (see Kiro above).
+  ...Object.fromEntries(
+    LOVABLE_MODEL_KEYS.map((key) => [key, LOVABLE_DEFAULT_CUTOFF]),
+  ),
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -441,12 +467,18 @@ export const modelDisplayNames: Record<ModelName, string> &
   ...Object.fromEntries(
     KIRO_MODEL_KEYS.map((key) => [key, getKiroModelName(key)]),
   ),
+  // Lovable models, derived from the catalog (see Kiro above).
+  ...Object.fromEntries(
+    LOVABLE_MODEL_KEYS.map((key) => [key, getLovableModelName(key)]),
+  ),
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
   if (modelDisplayNames[modelName]) return modelDisplayNames[modelName];
   // Gateway-only Kiro models absent from the static catalog get a derived label.
   if (isKiroModelKey(modelName)) return getKiroModelName(modelName);
+  // Gateway-only Lovable models absent from the static catalog get a derived label.
+  if (isLovableModelKey(modelName)) return getLovableModelName(modelName);
   if (
     isKnownZenFreeModelId(modelName) &&
     (KNOWN_ZEN_FREE_MODELS as readonly string[]).includes(modelName)
@@ -468,8 +500,16 @@ export const getModelCutoffDate = (
   if ((KNOWN_ZEN_FREE_MODELS as readonly string[]).includes(modelName))
     return "August 2026";
   if (isKiroModelKey(modelName)) return KIRO_DEFAULT_CUTOFF;
+  if (isLovableModelKey(modelName)) return LOVABLE_DEFAULT_CUTOFF;
   return modelCutoffDates[modelName];
 };
+
+/** Whether a provider key routes to GPT-6 Astra via the Responses API. */
+export function isLovableResponsesModel(modelName: string): boolean {
+  return (
+    isLovableModelKey(modelName) && lovableModelUsesResponsesApi(modelName)
+  );
+}
 
 export function isAnthropicModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
@@ -562,6 +602,10 @@ export function resolveTierToProviderKey(
   if (typeof tier === "string" && isKiroModelKey(tier)) {
     return tier as ModelName;
   }
+  // Direct Lovable gateway model selection also bypasses tier mapping.
+  if (typeof tier === "string" && isLovableModelKey(tier)) {
+    return tier as ModelName;
+  }
   switch (tier) {
     case "hackerai-standard":
       return "model-deepseek-v4-flash-0731";
@@ -595,6 +639,10 @@ export const myProvider = {
     // Kiro models the gateway exposes but the static catalog doesn't list yet.
     if (isKiroModelKey(modelId)) {
       return kiroFactory(modelId);
+    }
+    // Lovable models the gateway exposes but the static catalog doesn't list yet.
+    if (isLovableModelKey(modelId)) {
+      return lovableFactory(modelId);
     }
     // Fallback to base provider (will throw if not found, preserving original behavior)
     return (baseMyProvider as any).languageModel(modelId);

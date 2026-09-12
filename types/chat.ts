@@ -68,7 +68,8 @@ export type ZenFreeModel = (typeof ZEN_FREE_MODELS)[number];
 export function isZenFreeModel(value: string | null): value is ZenFreeModel {
   return (
     typeof value === "string" &&
-    (value.endsWith("-free") || (ZEN_FREE_MODELS as readonly string[]).includes(value))
+    (value.endsWith("-free") ||
+      (ZEN_FREE_MODELS as readonly string[]).includes(value))
   );
 }
 
@@ -97,12 +98,40 @@ export function isKiroModel(value: string | null): boolean {
   );
 }
 
+/**
+ * Prefix for Lovable Gateway model ids (see `lib/ai/providers/lovable-models.ts`).
+ * Duplicated here rather than imported so this module stays free of `lib/ai/`
+ * dependencies and safe to bundle into client components, matching the
+ * `KIRO_MODEL_PREFIX` approach above.
+ */
+export const LOVABLE_MODEL_PREFIX = "lovable-";
+
+/**
+ * Prefix check rather than an allowlist: the gateway's catalog is dynamic, so
+ * a gateway upgrade should not require a code change here. The server still
+ * resolves the concrete model, and unknown ids fail at request time.
+ */
+export function isLovableModel(value: string | null): boolean {
+  return (
+    typeof value === "string" &&
+    value.startsWith(LOVABLE_MODEL_PREFIX) &&
+    value.length > LOVABLE_MODEL_PREFIX.length
+  );
+}
+
 export type ReasoningTier = "quick" | "thorough" | "deep";
 
-export const REASONING_TIERS: readonly ReasoningTier[] = ["quick", "thorough", "deep"] as const;
+export const REASONING_TIERS: readonly ReasoningTier[] = [
+  "quick",
+  "thorough",
+  "deep",
+] as const;
 
 export function isReasoningTier(value: unknown): value is ReasoningTier {
-  return typeof value === "string" && (REASONING_TIERS as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (REASONING_TIERS as readonly string[]).includes(value)
+  );
 }
 
 export function coerceReasoningTier(value: unknown): ReasoningTier | null {
@@ -110,13 +139,18 @@ export function coerceReasoningTier(value: unknown): ReasoningTier | null {
   return null;
 }
 
-export function getDefaultReasoningTier(subscription: SubscriptionTier): ReasoningTier {
+export function getDefaultReasoningTier(
+  subscription: SubscriptionTier,
+): ReasoningTier {
   if (subscription === "free") return "quick";
   if (subscription === "ultra") return "deep";
   return "thorough";
 }
 
-export function canUseReasoningTier(tier: ReasoningTier, subscription: SubscriptionTier): boolean {
+export function canUseReasoningTier(
+  tier: ReasoningTier,
+  subscription: SubscriptionTier,
+): boolean {
   if (tier === "deep" && subscription === "free") return false;
   return true;
 }
@@ -125,8 +159,10 @@ export function normalizeReasoningTierForSubscription(
   tier: ReasoningTier | null | undefined,
   subscription: SubscriptionTier,
 ): ReasoningTier {
-  if (!tier || !isReasoningTier(tier)) return getDefaultReasoningTier(subscription);
-  if (!canUseReasoningTier(tier, subscription)) return getDefaultReasoningTier(subscription);
+  if (!tier || !isReasoningTier(tier))
+    return getDefaultReasoningTier(subscription);
+  if (!canUseReasoningTier(tier, subscription))
+    return getDefaultReasoningTier(subscription);
   return tier;
 }
 
@@ -166,7 +202,7 @@ export function coerceSelectedModel(
   if ((SELECTABLE_MODELS as readonly string[]).includes(value)) {
     return value as SelectedModel;
   }
-  if (isZenModel(value) || isKiroModel(value)) {
+  if (isZenModel(value) || isKiroModel(value) || isLovableModel(value)) {
     return value as SelectedModel;
   }
   // Use Object.hasOwn (not the `in` operator) to avoid matching inherited
@@ -183,7 +219,8 @@ export function isSelectedModel(value: string | null): value is SelectedModel {
     value !== null &&
     ((SELECTABLE_MODELS as readonly string[]).includes(value) ||
       isZenModel(value) ||
-      isKiroModel(value))
+      isKiroModel(value) ||
+      isLovableModel(value))
   );
 }
 

@@ -12,6 +12,7 @@ import type {
   ModelMessage,
   SystemModelMessage,
 } from "ai";
+import type { JSONObject } from "@ai-sdk/provider";
 import { NoSuchModelError } from "ai";
 import type {
   ChatMode,
@@ -27,6 +28,7 @@ import {
   GROK_4_6_SLUG,
   getOpenRouterProviderRoutingForModel,
   isAnthropicModel,
+  isLovableResponsesModel,
   myProvider,
 } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
@@ -893,24 +895,40 @@ export function buildProviderOptions(
               }
             : { enabled: false }));
 
-  return {
-    openrouter: {
-      reasoning,
-      ...(options.hasPdfAttachments && isDeepSeekV4
-        ? {
-            plugins: [
-              {
-                id: "file-parser" as const,
-                pdf: { engine: "mistral-ocr" as const },
-              },
-            ],
-          }
-        : {}),
-      ...(userId && { user: userId }),
-      ...(providerRouting && { provider: providerRouting }),
-      ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
-    },
-  } as const;
+  const openrouterOptions: JSONObject = {
+    reasoning,
+    ...(options.hasPdfAttachments && isDeepSeekV4
+      ? {
+          plugins: [
+            {
+              id: "file-parser" as const,
+              pdf: { engine: "mistral-ocr" as const },
+            },
+          ],
+        }
+      : {}),
+    ...(userId && { user: userId }),
+    ...(providerRouting && { provider: providerRouting }),
+    ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
+  };
+
+  const result: Record<string, JSONObject> = {
+    openrouter: openrouterOptions,
+  };
+
+  // GPT-6 Astra runs through the Lovable Responses API (`/v1/responses`),
+  // which requires reasoning to stay enabled for gateway-prefixed model ids.
+  if (modelName && isLovableResponsesModel(modelName)) {
+    result.openai = {
+      forceReasoning: true,
+      reasoningEffort: "medium",
+      reasoningSummary: "auto",
+      store: false,
+      include: ["reasoning.encrypted_content"],
+    };
+  }
+
+  return result;
 }
 
 const ANTHROPIC_CACHE_BREAKPOINT = {

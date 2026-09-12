@@ -18,7 +18,7 @@ import {
   resolveTierToProviderKey,
   type ModelName,
 } from "@/lib/ai/providers";
-import { isKiroModel, isZenModel } from "@/types/chat";
+import { isKiroModel, isLovableModel, isZenModel } from "@/types/chat";
 import {
   ABORTED_TOOL_ERROR_TEXT,
   getIncompleteToolErrorText,
@@ -87,11 +87,15 @@ export function selectModel(
       ? "ask-model-free"
       : paidAskMediaModel;
 
-  // Direct Zen / Kiro model selection bypasses tier logic.
+  // Direct Zen / Kiro / Lovable model selection bypasses tier logic.
   if (allowedSelectedModel && isZenModel(allowedSelectedModel)) {
     return allowedSelectedModel as unknown as ModelName;
   }
   if (allowedSelectedModel && isKiroModel(allowedSelectedModel)) {
+    if (subscription === "free") return autoModel;
+    return allowedSelectedModel as unknown as ModelName;
+  }
+  if (allowedSelectedModel && isLovableModel(allowedSelectedModel)) {
     if (subscription === "free") return autoModel;
     return allowedSelectedModel as unknown as ModelName;
   }
