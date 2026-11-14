@@ -244,6 +244,20 @@ const resolveZenModelId = (openRouterSlug: string): string => {
   if (isKnownZenFreeModelId(openRouterSlug)) {
     return openRouterSlug;
   }
+  const baseUrl =
+    process.env.OPENCODE_ZEN_BASE_URL?.trim() || "https://opencode.ai/zen/v1";
+  const isCustomProvider = !baseUrl.includes("opencode.ai");
+  // When using a custom provider (e.g. NVIDIA), direct provider model IDs
+  // pass through unchanged so the user's selection from the model listing
+  // is honored. NVIDIA IDs use orgs like z-ai, moonshotai, nvidia,
+  // deepseek-ai, meta — distinct from OpenRouter slugs like
+  // "deepseek/deepseek-v4-flash-0731".
+  if (isCustomProvider) {
+    const nvidiaOrgs = ["z-ai/", "moonshotai/", "nvidia/", "deepseek-ai/", "meta/", "01-ai/", "adept/", "ai21labs/", "aisingapore/", "bigcode/", "databricks/", "google/", "ibm/", "microsoft/", "mistralai/", "nv-mistralai/"];
+    if (nvidiaOrgs.some((org) => openRouterSlug.startsWith(org))) {
+      return openRouterSlug;
+    }
+  }
   const configured = process.env.OPENCODE_ZEN_MODEL?.trim();
   const standard =
     process.env.OPENCODE_ZEN_MODEL_STANDARD?.trim() ||
