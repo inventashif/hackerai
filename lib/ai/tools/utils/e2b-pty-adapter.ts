@@ -47,6 +47,13 @@ interface SandboxWithPty {
 
 export interface PtyHandle {
   readonly pid: number;
+  /**
+   * Agent-side session key (the id the sandbox runner knows this PTY by).
+   * Present for Centrifugo-backed handles; undefined for E2B. Used to
+   * persist the session in the cross-instance registry so a later server
+   * instance can re-attach to the same sandbox-side PTY.
+   */
+  readonly sessionKey?: string;
   sendInput(bytes: Uint8Array): Promise<void>;
   resize(cols: number, rows: number): Promise<void>;
   kill(): Promise<void>;

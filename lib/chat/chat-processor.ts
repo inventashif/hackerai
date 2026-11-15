@@ -18,7 +18,13 @@ import {
   resolveTierToProviderKey,
   type ModelName,
 } from "@/lib/ai/providers";
-import { isKiroModel, isLovableModel, isZenModel } from "@/types/chat";
+import {
+  isCoarenaModel,
+  isCustomModel,
+  isKiroModel,
+  isLovableModel,
+  isZenModel,
+} from "@/types/chat";
 import {
   ABORTED_TOOL_ERROR_TEXT,
   getIncompleteToolErrorText,
@@ -96,6 +102,14 @@ export function selectModel(
     return allowedSelectedModel as unknown as ModelName;
   }
   if (allowedSelectedModel && isLovableModel(allowedSelectedModel)) {
+    if (subscription === "free") return autoModel;
+    return allowedSelectedModel as unknown as ModelName;
+  }
+  if (allowedSelectedModel && isCoarenaModel(allowedSelectedModel)) {
+    if (subscription === "free") return autoModel;
+    return allowedSelectedModel as unknown as ModelName;
+  }
+  if (allowedSelectedModel && isCustomModel(allowedSelectedModel)) {
     if (subscription === "free") return autoModel;
     return allowedSelectedModel as unknown as ModelName;
   }

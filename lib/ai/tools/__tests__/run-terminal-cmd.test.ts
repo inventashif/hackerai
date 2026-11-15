@@ -788,7 +788,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
 
     expect(browserCall?.[1]).toMatchObject({
-      envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+      envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "540000" },
     });
     expect(unrelatedCall?.[1]).not.toHaveProperty("envs");
   });
@@ -811,7 +811,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(mockCreateE2BPtyHandle).toHaveBeenCalledWith(
       e2b,
       expect.objectContaining({
-        envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+        envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "540000" },
       }),
     );
   });
@@ -1107,7 +1107,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     }
   });
 
-  test("uses the exact E2B command handle to terminate noisy foreground work", async () => {
+  test("sessions noisy foreground work instead of terminating it on timeout", async () => {
     const noisyOutput = "line with repeated output\n".repeat(20_000);
     let rejectWait!: (error: Error) => void;
     const wait = new Promise<never>((_resolve, reject) => {
@@ -1177,10 +1177,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       };
     };
 
-    expect(started.kill).toHaveBeenCalledTimes(1);
-    expect(result.result.exitCode).toBe(124);
-    expect(result.result.terminatedOnTimeout).toBe(true);
-    expect(result.result.output).toContain("PID: 4321");
+    expect(started.kill).not.toHaveBeenCalled();
+    expect(result.result.exitCode).toBeNull();
+    expect(result.result.terminatedOnTimeout).toBeUndefined();
+    expect(result.result.output).toContain("Command output paused");
     expect(
       run.mock.calls.some(([calledCommand]) =>
         String(calledCommand).includes("pgrep"),
@@ -1191,10 +1191,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       source: "terminal_command_timeout",
       failureType: "terminal_command_timed_out",
       timeoutSeconds: 0.01,
-      terminalTimeoutOutcome: "command_terminated",
-      terminationAttempted: true,
-      terminationSucceeded: true,
-      sessionReturned: false,
+      terminalTimeoutOutcome: "session_resumable",
+      terminationAttempted: false,
+      terminationSucceeded: false,
+      sessionReturned: true,
       isBackground: false,
       metrics: {
         cpuPct: 100,
@@ -1270,7 +1270,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     ).toContain("rm -rf /");
   });
 
-  test("cancels noisy foreground commands through their execution-specific token", async () => {
+  test("keeps noisy foreground commands running on timeout instead of cancelling them", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const noisyOutput = "line with repeated output\n".repeat(20_000);
     const cancellationObserved = jest.fn();
@@ -1319,12 +1319,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         };
       };
 
-      expect(result.result.exitCode).toBe(124);
-      expect(result.result.terminatedOnTimeout).toBe(true);
+      expect(result.result.exitCode).toBeNull();
+      expect(result.result.terminatedOnTimeout).toBeUndefined();
       expect(result.result.output).toContain(
-        "noisy foreground process was terminated",
+        "Command output paused after 0.01 seconds",
       );
-      expect(cancellationObserved).toHaveBeenCalledTimes(1);
+      expect(cancellationObserved).not.toHaveBeenCalled();
       expect(
         nonE2B.commands.run.mock.calls.some(([calledCommand]) =>
           String(calledCommand).includes("pgrep"),
@@ -1341,16 +1341,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         })
         .find((line) => line?.event === "agent_terminal_noisy_timeout");
 
-      expect(noisyTimeoutLog).toMatchObject({
-        event: "agent_terminal_noisy_timeout",
-        chat_id: "chat-1",
-        user_id: "u1",
-        tool_call_id: "call-1",
-        output_truncated: true,
-        termination_attempted: true,
-        termination_succeeded: true,
-      });
-      expect(noisyTimeoutLog?.pid).toBeUndefined();
+      expect(noisyTimeoutLog).toBeUndefined();
     } finally {
       warnSpy.mockRestore();
     }

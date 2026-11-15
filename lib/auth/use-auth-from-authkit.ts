@@ -17,6 +17,10 @@ const refreshMutex = new CrossTabMutex({
   onLog: (msg) => console.log(`[Convex Auth] ${msg}`),
 });
 
+// Module-level cache for personal mode token to avoid fetching on every call
+let personalTokenCache: string | null = null;
+let personalTokenFetchPromise: Promise<string | null> | null = null;
+
 export function useSharedTokenCleanup(enabled: boolean): void {
   useEffect(() => {
     if (!enabled) return;
@@ -52,7 +56,7 @@ export function useAuthFromAuthKit(
 ): ConvexAuthState {
   const {
     user,
-    loading: isLoading,
+    loading: authKitLoading,
     organizationId,
     refreshAuth,
   } = deps.useAuth();
@@ -90,12 +94,39 @@ export function useAuthFromAuthKit(
     accessTokenRef.current = accessToken;
   }, [accessToken]);
 
-  const isAuthenticated = !!user;
+  const isPersonalMode = process.env.NEXT_PUBLIC_PERSONAL_MODE === "true";
+  // In personal mode there is no WorkOS session; never report loading,
+  // otherwise ConvexProviderWithAuth waits forever and queries run unauthenticated.
+  const isLoading = isPersonalMode ? false : authKitLoading;
+
+  const isAuthenticated = isPersonalMode ? true : !!user;
 
   const fetchAccessToken = useCallback(
     async ({
       forceRefreshToken,
     }: { forceRefreshToken?: boolean } = {}): Promise<string | null> => {
+      // Personal mode: fetch the personal JWT directly instead of using WorkOS
+      // Uses a cached token to avoid network fetch on every call
+      if (process.env.NEXT_PUBLIC_PERSONAL_MODE === "true") {
+        if (personalTokenCache) return personalTokenCache;
+        if (!personalTokenFetchPromise) {
+          personalTokenFetchPromise = (async () => {
+            try {
+              const res = await fetch("/api/auth/personal-token");
+              if (!res.ok) return null;
+              const data = await res.json();
+              personalTokenCache = data.accessToken ?? null;
+              return personalTokenCache;
+            } catch {
+              return null;
+            } finally {
+              personalTokenFetchPromise = null;
+            }
+          })();
+        }
+        return personalTokenFetchPromise;
+      }
+
       if (!user) {
         return null;
       }

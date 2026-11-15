@@ -40,11 +40,18 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const filter = url.searchParams.get("filter"); // "free" | "all" | null
 
+  // When using a custom base URL (e.g. NVIDIA), the "-free" filter doesn't
+  // apply — return all models so the listing isn't empty.
+  const baseUrl =
+    process.env.OPENCODE_ZEN_BASE_URL?.trim() || "https://opencode.ai/zen/v1";
+  const isCustomProvider = !baseUrl.includes("opencode.ai");
+  const effectiveFilter = isCustomProvider ? "all" : filter;
+
   // Serve from cache if fresh and filter is not requested to be "all" with different handling
   // We cache the full list and filter afterwards
   if (cached && Date.now() < cached.expiresAt) {
     const data =
-      filter === "all" ? cached.data : cached.data.filter((m) => isFreeModel(m.id));
+      effectiveFilter === "all" ? cached.data : cached.data.filter((m) => isFreeModel(m.id));
     return NextResponse.json(
       { object: "list", data },
       {
@@ -56,8 +63,6 @@ export async function GET(request: Request) {
     );
   }
 
-  const baseUrl =
-    process.env.OPENCODE_ZEN_BASE_URL?.trim() || "https://opencode.ai/zen/v1";
   const modelsUrl = `${baseUrl.replace(/\/$/, "")}/models`;
 
   try {
@@ -90,7 +95,7 @@ export async function GET(request: Request) {
     cached = { data: allModels, expiresAt: Date.now() + CACHE_TTL_MS };
 
     const data =
-      filter === "all" ? allModels : allModels.filter((m) => isFreeModel(m.id));
+      effectiveFilter === "all" ? allModels : allModels.filter((m) => isFreeModel(m.id));
 
     return NextResponse.json(
       { object: "list", data },
@@ -106,7 +111,7 @@ export async function GET(request: Request) {
     // If we have stale cache, serve it
     if (cached) {
       const data =
-        filter === "all" ? cached.data : cached.data.filter((m) => isFreeModel(m.id));
+        effectiveFilter === "all" ? cached.data : cached.data.filter((m) => isFreeModel(m.id));
       return NextResponse.json(
         { object: "list", data, stale: true },
         {

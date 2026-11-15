@@ -129,7 +129,7 @@ describe("createPreemptiveTimeout", () => {
       userId: "user-1",
     });
 
-    jest.advanceTimersByTime(359_999);
+    jest.advanceTimersByTime(239_999);
     expect(abortSpy).not.toHaveBeenCalled();
 
     jest.advanceTimersByTime(1);
@@ -142,9 +142,9 @@ describe("createPreemptiveTimeout", () => {
         user_id: "user-1",
         chat_id: "chat-1",
         endpoint: "/api/chat",
-        max_duration_seconds: 420,
+        max_duration_seconds: 300,
         safety_buffer_seconds: 60,
-        max_stream_time_ms: 360_000,
+        max_stream_time_ms: 240_000,
       }),
     );
     expect(mockPhInfo).toHaveBeenCalledWith(

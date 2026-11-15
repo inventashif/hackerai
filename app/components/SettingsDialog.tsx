@@ -12,12 +12,14 @@ import {
   Server,
   ChartNoAxesCombined,
   Gauge,
+  Plug,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ManageNotesDialog } from "@/app/components/ManageNotesDialog";
 import { CustomizeHackerAIDialog } from "@/app/components/CustomizeHackerAIDialog";
 import { SecurityTab } from "@/app/components/SecurityTab";
 import { PersonalizationTab } from "@/app/components/PersonalizationTab";
+import { CustomProviderTab } from "@/app/components/CustomProviderTab";
 import { AccountTab } from "@/app/components/AccountTab";
 import { DataControlsTab } from "@/app/components/DataControlsTab";
 import { TeamTab } from "@/app/components/TeamTab";
@@ -72,6 +74,7 @@ const SettingsDialog = ({
   // Base tabs visible to all users
   const baseTabs = [
     { id: "Personalization", label: "Personalization", icon: Settings },
+    { id: "Custom Provider", label: "Custom Provider", icon: Plug },
     { id: "Security", label: "Security", icon: Shield },
     { id: "Data controls", label: "Data controls", icon: Database },
   ];
@@ -245,6 +248,8 @@ const SettingsDialog = ({
                 )}
 
                 {activeTab === "Security" && <SecurityTab />}
+
+                {activeTab === "Custom Provider" && <CustomProviderTab />}
 
                 {activeTab === "Data controls" && <DataControlsTab />}
 

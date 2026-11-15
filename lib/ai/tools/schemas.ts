@@ -27,6 +27,14 @@ export const toolBriefSchema = createToolBriefSchema();
 
 export const RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 export const RUN_TERMINAL_MAX_TIMEOUT_SECONDS = 600;
+// Hard ceiling on how long one tool call waits for output. The platform
+// aborts the whole turn at 240s and KILLS in-flight commands, so the wait
+// must end well before then: at this ceiling the command keeps running in
+// a reusable terminal session and the agent polls it with
+// interact_terminal_session (same turn or a chained turn) instead of
+// losing the work to the abort. PTY session output is ring-buffered
+// (256KB cap), so sessioning verbose commands is safe.
+export const RUN_TERMINAL_TURN_SAFE_TIMEOUT_SECONDS = 150;
 
 export const createRunTerminalCmdToolSchema = ({
   approvalGated = false,
@@ -68,12 +76,12 @@ ${commandCompositionGuidance}
 2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file.
 3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 ${pagerGuidance}
-5. For long-running commands whose output or completion you need to monitor, keep \`is_background\` false. If the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID. Use \`is_background\` true only for detached jobs whose output and completion you do not need to poll; a detached PID is not a reusable terminal session.
+5. LONG COMMANDS (expected over 2 minutes: builds, go/pip/apt installs, scans): run DETACHED with output to a file. Pass \`is_background: true\` and wrap the command as \`your-command > /tmp/hackerai-job-<name>.log 2>&1; echo EXIT:$? >> /tmp/hackerai-job-<name>.log\`. The detached process survives turn limits. Then poll with fresh foreground commands: \`ps -p <PID>\` for aliveness and \`tail -n 50 /tmp/hackerai-job-<name>.log\` for output, and read the EXIT line for the exit code. NEVER re-run the command while its PID is still alive. For short commands and interactive use (REPLs, prompts), keep \`is_background\` false; if the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID — sessions survive across turns, so keep the same ID in later turns rather than restarting the command.
 6. Dont include any newlines in the command.
 ${largeOutputGuidance}
 8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
 9. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
-10. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 7 minutes (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout -> reduce scope, break into smaller operations.
+10. For pentesting tools, always use time-efficient flags and targeted scans to keep each foreground execution under 2 minutes (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Longer scans run detached with output to a file (see guideline 5) and are polled to completion. Timeout handling: On timeout -> reduce scope, break into smaller operations.
 11. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
 12. When searching for text in files, prefer using \`rg\` (ripgrep) because it is much faster than alternatives like \`grep\`. When searching for files by name, prefer \`rg --files\` or \`find\`. If the \`rg\` command is not found, fall back to \`grep\` or \`find\`.
    - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.`,
@@ -104,14 +112,14 @@ ${largeOutputGuidance}
         .optional()
         .default(false)
         .describe(
-          "Run the command as a detached background process. Only meaningful when interactive=false; ignored otherwise. Detached processes return a PID but no reusable terminal session, so never pass that PID to interact_terminal_session. Use FALSE if you need output or a resumable session; TRUE only for long-running processes whose output you do not need to poll.",
+          "Run the command as a detached background process that survives turn limits (own process group, output NOT streamed). REQUIRED for non-interactive commands expected to run over 2 minutes: redirect ALL output to a file yourself (`> /tmp/hackerai-job-<name>.log 2>&1; echo EXIT:$? >> /tmp/hackerai-job-<name>.log`) because detached output is otherwise discarded. Returns a PID: poll aliveness with `ps -p <PID>` and output with `tail` on the file in fresh foreground commands. A detached PID is not a reusable terminal session — never pass it to interact_terminal_session. Use FALSE for short commands and anything interactive.",
         ),
       timeout: z
         .number()
         .optional()
         .default(RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for command output before returning. A quiet foreground command that is still running returns a reusable opaque session ID for interact_terminal_session; copy that returned session exactly and never derive one from its PID. Noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+          `Timeout in seconds to wait for command output before returning. A foreground command that is still running returns a reusable opaque session ID for interact_terminal_session; copy that returned session exactly and never derive one from its PID. The wait is capped at ${RUN_TERMINAL_TURN_SAFE_TIMEOUT_SECONDS} seconds per call so long commands keep running in a session instead of being cut off by the turn time limit; poll the session to completion. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
         ),
       interactive: z
         .boolean()
@@ -128,6 +136,10 @@ export const runTerminalCmdTool = createRunTerminalCmdToolSchema();
 
 export const INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS = 10;
 export const INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS = 300;
+// Hard ceiling on one wait: a wait running into the 240s pre-emptive turn
+// abort is killed with the turn, so waits return well before then and the
+// agent re-polls (same turn or a chained turn) instead.
+export const INTERACT_TERMINAL_TURN_SAFE_WAIT_SECONDS = 90;
 
 export const createInteractTerminalSessionToolSchema = ({
   modelName,
@@ -190,7 +202,7 @@ export const createInteractTerminalSessionToolSchema = ({
         .optional()
         .default(INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for output. Only used for \`wait\` action. Defaults to ${INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS} seconds. Max ${INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS} seconds.`,
+          `Timeout in seconds to wait for output. Only used for \`wait\` action. Defaults to ${INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS} seconds. Capped at ${INTERACT_TERMINAL_TURN_SAFE_WAIT_SECONDS} seconds per wait so the wait returns before the turn time limit; poll again if the process is still running.`,
         ),
     }),
   });

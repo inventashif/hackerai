@@ -33,6 +33,7 @@ import {
   confirmProcessTermination,
   isProcessTreeTerminationConfirmed,
 } from "./command-cancellation";
+import { CommandHistory } from "./command-history";
 import { CentrifugoPublishQueue } from "./centrifugo-transport";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
@@ -42,6 +43,14 @@ const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 
 // Idle check interval: check every 5 minutes
 const IDLE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
+// Heartbeat interval: refresh last_heartbeat every 60s via
+// refreshCentrifugoToken. Without this the server's presence sweep (120s
+// grace, no heartbeat from the client) marks a live connection stale after
+// any transient presence miss, and the agent never learns its row is dead
+// because Centrifuge only calls getToken when the JWT expires. 60s keeps
+// last_heartbeat well inside the grace window.
+const HEARTBEAT_INTERVAL_MS = 60 * 1000;
 
 // Production Convex URL - hardcoded for the published package
 const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
@@ -78,6 +87,12 @@ interface Config {
    * and falls back to the server-provided public URL on early failure.
    */
   centrifugoUrl?: string;
+  /**
+   * When true, the 1-hour idle auto-terminate is disabled. For always-on
+   * server deployments (systemd) where the sandbox must never exit.
+   * Set via --no-idle-timeout.
+   */
+  disableIdleTimeout?: boolean;
 }
 
 interface OsInfo {
@@ -141,6 +156,13 @@ interface CentrifugoCommandCancelResultMessage {
   canceled: boolean;
 }
 
+interface CommandStatusMessage {
+  type: "command_status";
+  commandId: string;
+  requestId: string;
+  targetConnectionId: string;
+}
+
 // --- PTY incoming message types ---
 
 interface PtyCreateMessage {
@@ -176,12 +198,24 @@ interface PtyKillMessage {
   targetConnectionId: string;
 }
 
+interface PtyStatusMessage {
+  type: "pty_status";
+  sessionId: string;
+  requestId: string;
+  targetConnectionId: string;
+}
+
 type CentrifugoPtyIncomingMessage =
-  PtyCreateMessage | PtyInputMessage | PtyResizeMessage | PtyKillMessage;
+  | PtyCreateMessage
+  | PtyInputMessage
+  | PtyResizeMessage
+  | PtyKillMessage
+  | PtyStatusMessage;
 
 type TargetedIncomingMessage =
   | CentrifugoCommandMessage
   | CentrifugoCommandCancelMessage
+  | CommandStatusMessage
   | CentrifugoPtyIncomingMessage;
 
 function isTargetedIncomingMessage(
@@ -198,10 +232,12 @@ function isTargetedIncomingMessage(
     typeof targetConnectionId === "string" &&
     (type === "command" ||
       type === "command_cancel" ||
+      type === "command_status" ||
       type === "pty_create" ||
       type === "pty_input" ||
       type === "pty_resize" ||
-      type === "pty_kill")
+      type === "pty_kill" ||
+      type === "pty_status")
   );
 }
 
@@ -231,6 +267,26 @@ interface CentrifugoPtyErrorMessage {
   message: string;
 }
 
+interface CentrifugoPtyStatusResultMessage {
+  type: "pty_status_result";
+  sessionId: string;
+  requestId: string;
+  status: "running" | "exited" | "unknown";
+  pid?: number;
+  exitCode?: number | null;
+  outputTail?: string;
+}
+
+interface CentrifugoCommandStatusResultMessage {
+  type: "command_status_result";
+  commandId: string;
+  requestId: string;
+  status: "running" | "exited" | "unknown";
+  pid?: number;
+  exitCode?: number | null;
+  outputTail?: string;
+}
+
 type CentrifugoOutgoingMessage =
   | CentrifugoStdoutMessage
   | CentrifugoStderrMessage
@@ -240,7 +296,9 @@ type CentrifugoOutgoingMessage =
   | CentrifugoPtyReadyMessage
   | CentrifugoPtyDataMessage
   | CentrifugoPtyExitMessage
-  | CentrifugoPtyErrorMessage;
+  | CentrifugoPtyErrorMessage
+  | CentrifugoPtyStatusResultMessage
+  | CentrifugoCommandStatusResultMessage;
 
 interface ConnectResult {
   success: boolean;
@@ -295,7 +353,10 @@ class LocalSandboxClient {
   private isShuttingDown = false;
   private lastActivityTime: number;
   private idleCheckInterval?: NodeJS.Timeout;
+  private heartbeatInterval?: NodeJS.Timeout;
+  private heartbeatInFlight = false;
   private processRunner: ProcessRunner;
+  private commandHistory: CommandHistory;
   private activeStreamCommands: Map<string, ChildProcess> = new Map();
   private publishQueue?: CentrifugoPublishQueue;
 
@@ -303,6 +364,7 @@ class LocalSandboxClient {
     this.convexHttp = new ConvexHttpClient(config.convexUrl);
     this.lastActivityTime = Date.now();
     this.processRunner = new ProcessRunner();
+    this.commandHistory = new CommandHistory();
     this.setupProcessRunnerListeners();
   }
 
@@ -426,6 +488,7 @@ class LocalSandboxClient {
 
       this.setupCentrifugo(primaryUrl, result.centrifugoToken, fallbackUrl);
       this.startIdleCheck();
+      this.startHeartbeat();
     } catch (error: unknown) {
       const err = error as { data?: { message?: string }; message?: string };
       const errorMessage =
@@ -575,6 +638,18 @@ class LocalSandboxClient {
           });
           break;
 
+        case "command_status":
+          this.handleCommandStatus(message as CommandStatusMessage).catch(
+            (error: unknown) => {
+              console.error(
+                chalk.red(
+                  `[CMD] Failed to answer status query: ${error instanceof Error ? error.message : String(error)}`,
+                ),
+              );
+            },
+          );
+          break;
+
         case "pty_create":
           this.handlePtyCreate(message as PtyCreateMessage).catch(
             (error: unknown) => {
@@ -597,6 +672,18 @@ class LocalSandboxClient {
 
         case "pty_kill":
           this.handlePtyKill(message as PtyKillMessage);
+          break;
+
+        case "pty_status":
+          this.handlePtyStatus(message as PtyStatusMessage).catch(
+            (error: unknown) => {
+              console.error(
+                chalk.red(
+                  `[PTY] Failed to answer status query: ${error instanceof Error ? error.message : String(error)}`,
+                ),
+              );
+            },
+          );
           break;
 
         default:
@@ -780,6 +867,22 @@ class LocalSandboxClient {
     });
   }
 
+  private async handleCommandStatus(msg: CommandStatusMessage): Promise<void> {
+    const { commandId, requestId } = msg;
+    const status = this.commandHistory.getStatus(commandId);
+    await this.publishToChannel({
+      type: "command_status_result",
+      commandId,
+      requestId,
+      status: status.status,
+      ...(status.pid !== undefined ? { pid: status.pid } : {}),
+      ...(status.exitCode !== undefined
+        ? { exitCode: status.exitCode }
+        : {}),
+      ...(status.outputTail ? { outputTail: status.outputTail } : {}),
+    });
+  }
+
   private terminateProcessTree(proc: ChildProcess): void {
     const pid = proc.pid;
     if (!pid) {
@@ -848,6 +951,7 @@ class LocalSandboxClient {
         ...spawnSpec.options,
       });
       this.activeStreamCommands.set(commandId, proc);
+      this.commandHistory.start(commandId, proc.pid);
 
       if (commandTimeout > 0) {
         timeoutId = setTimeout(() => {
@@ -860,6 +964,7 @@ class LocalSandboxClient {
 
       proc.stdout?.on("data", (data: Buffer) => {
         const chunk = data.toString();
+        this.commandHistory.append(commandId, chunk);
         this.publishToChannel({
           type: "stdout",
           commandId,
@@ -876,6 +981,7 @@ class LocalSandboxClient {
       proc.stderr?.on("data", (data: Buffer) => {
         const chunk = data.toString();
         accumulatedStderr += chunk;
+        this.commandHistory.append(commandId, chunk);
         this.publishToChannel({
           type: "stderr",
           commandId,
@@ -895,6 +1001,7 @@ class LocalSandboxClient {
 
         const duration = Date.now() - startTime;
         const exitCode = killed ? 124 : (code ?? 1);
+        this.commandHistory.recordExit(commandId, exitCode);
 
         if (killed) {
           this.publishToChannel({
@@ -950,6 +1057,7 @@ class LocalSandboxClient {
       proc.on("error", async (error) => {
         if (timeoutId) clearTimeout(timeoutId);
         this.activeStreamCommands.delete(commandId);
+        this.commandHistory.recordExit(commandId, 1);
         this.publishToChannel({
           type: "error",
           commandId,
@@ -1063,7 +1171,93 @@ class LocalSandboxClient {
     }
   }
 
+  private async handlePtyStatus(msg: PtyStatusMessage): Promise<void> {
+    const { sessionId, requestId } = msg;
+    const status = this.processRunner.getStatus(sessionId);
+    await this.publishToChannel({
+      type: "pty_status_result",
+      sessionId,
+      requestId,
+      status: status.status,
+      ...(status.pid !== undefined ? { pid: status.pid } : {}),
+      ...(status.exitCode !== undefined
+        ? { exitCode: status.exitCode }
+        : {}),
+      ...(status.outputTail ? { outputTail: status.outputTail } : {}),
+    });
+  }
+
+  /**
+   * Periodic heartbeat: refreshCentrifugoToken patches last_heartbeat, which
+   * keeps this connection inside the server presence sweep's grace window.
+   * If the server reports the connection terminated (row swept or
+   * disconnected), exit so the process supervisor restarts us with a fresh
+   * registration — staying alive with a dead row would leave the sandbox
+   * permanently invisible. Transient call failures only log; the next tick
+   * retries.
+   */
+  private startHeartbeat(): void {
+    this.heartbeatInterval = setInterval(() => {
+      void this.sendHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = undefined;
+    }
+  }
+
+  private async sendHeartbeat(): Promise<void> {
+    if (this.isShuttingDown || !this.connectionId || this.heartbeatInFlight) {
+      return;
+    }
+    this.heartbeatInFlight = true;
+    try {
+      const result = (await this.convexHttp.mutation(
+        api.localSandbox.refreshCentrifugoToken as never,
+        {
+          token: this.config.token,
+          connectionId: this.connectionId,
+        } as never,
+      )) as RefreshTokenResult;
+      if (!result.ok) {
+        console.error(
+          chalk.red(
+            `\n❌ Heartbeat: connection terminated by server (${result.reason}). Exiting for a fresh registration.`,
+          ),
+        );
+        this.cleanup().then(() => process.exit(1));
+      }
+      // result.ok: heartbeat accepted, last_heartbeat refreshed. The
+      // returned centrifugoToken is intentionally discarded — Centrifuge
+      // pulls fresh tokens through getToken when it needs one.
+    } catch (error) {
+      if (isInvalidTokenError(error)) {
+        console.error(chalk.red("\n❌ Token rejected by server."));
+        console.error(
+          chalk.yellow("Please regenerate your token in Settings."),
+        );
+        this.cleanup().then(() => process.exit(1));
+      } else {
+        console.error(
+          chalk.red("Heartbeat failed (will retry):"),
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    } finally {
+      this.heartbeatInFlight = false;
+    }
+  }
+
   private startIdleCheck(): void {
+    if (this.config.disableIdleTimeout) {
+      console.log(
+        chalk.gray("Idle auto-terminate disabled (--no-idle-timeout)."),
+      );
+      return;
+    }
     this.idleCheckInterval = setInterval(() => {
       const idleTime = Date.now() - this.lastActivityTime;
       if (idleTime >= IDLE_TIMEOUT_MS) {
@@ -1091,9 +1285,11 @@ class LocalSandboxClient {
 
     this.isShuttingDown = true;
     this.stopIdleCheck();
+    this.stopHeartbeat();
 
     // Stop all PTY sessions
     this.processRunner.stopAll();
+    this.commandHistory.dispose();
 
     // Stop all active streamed commands before dropping the realtime connection.
     this.terminateActiveStreamCommands();
@@ -1166,6 +1362,8 @@ ${chalk.yellow("Usage:")}
                        Override Centrifugo relay URL (remote machines must use
                        the public wss:// URL from Settings → Remote Control;
                        localhost only works on the same machine)
+   --no-idle-timeout   Disable the 1-hour idle auto-terminate (always-on
+                       server deployments)
    --help, -h          Show this help message
 
  ${chalk.yellow("Examples:")}
@@ -1179,7 +1377,8 @@ ${chalk.red("⚠️  Security Warning:")}
 
 ${chalk.cyan("Auto-termination:")}
   The client automatically terminates after 1 hour of inactivity (no commands
-  executed) to save system resources.
+  executed) to save system resources. Pass --no-idle-timeout to keep an
+  always-on server sandbox running.
 `);
   process.exit(0);
 }
@@ -1189,6 +1388,7 @@ const config: Config = {
   token: getArg("--token") || "",
   name: getArg("--name") || os.hostname(),
   centrifugoUrl: getArg("--centrifugo-url") || undefined,
+  disableIdleTimeout: hasFlag("--no-idle-timeout"),
 };
 
 if (!config.token) {

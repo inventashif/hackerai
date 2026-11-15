@@ -119,6 +119,49 @@ export function isLovableModel(value: string | null): boolean {
   );
 }
 
+/**
+ * Prefix for CoArena model ids (see `lib/ai/providers/coarena-models.ts`).
+ * Duplicated here rather than imported so this module stays free of `lib/ai/`
+ * dependencies and safe to bundle into client components, matching the
+ * `KIRO_MODEL_PREFIX` approach above.
+ */
+export const COARENA_MODEL_PREFIX = "coarena-";
+
+/**
+ * Prefix check rather than an allowlist: CoArena's catalog rotates, so a
+ * new model there should not require a code change here. The server still
+ * resolves the concrete model, and unknown ids fail at request time.
+ */
+export function isCoarenaModel(value: string | null): boolean {
+  return (
+    typeof value === "string" &&
+    value.startsWith(COARENA_MODEL_PREFIX) &&
+    value.length > COARENA_MODEL_PREFIX.length
+  );
+}
+
+/**
+ * Prefix for user-configured custom OpenAI-compatible provider models (see
+ * `lib/ai/providers/custom-openai.ts`). Duplicated here rather than imported
+ * so this module stays free of `lib/ai/` dependencies and safe to bundle
+ * into client components, matching the `KIRO_MODEL_PREFIX` approach above.
+ */
+export const CUSTOM_MODEL_PREFIX = "custom-";
+
+/**
+ * Prefix check rather than an allowlist: the user's endpoint catalog is
+ * dynamic, so a new model there should not require a code change here. The
+ * server still resolves the concrete model, and unknown ids fail at request
+ * time.
+ */
+export function isCustomModel(value: string | null): boolean {
+  return (
+    typeof value === "string" &&
+    value.startsWith(CUSTOM_MODEL_PREFIX) &&
+    value.length > CUSTOM_MODEL_PREFIX.length
+  );
+}
+
 export type ReasoningTier = "quick" | "thorough" | "deep";
 
 export const REASONING_TIERS: readonly ReasoningTier[] = [
@@ -202,7 +245,13 @@ export function coerceSelectedModel(
   if ((SELECTABLE_MODELS as readonly string[]).includes(value)) {
     return value as SelectedModel;
   }
-  if (isZenModel(value) || isKiroModel(value) || isLovableModel(value)) {
+  if (
+    isZenModel(value) ||
+    isKiroModel(value) ||
+    isLovableModel(value) ||
+    isCoarenaModel(value) ||
+    isCustomModel(value)
+  ) {
     return value as SelectedModel;
   }
   // Use Object.hasOwn (not the `in` operator) to avoid matching inherited
@@ -220,7 +269,9 @@ export function isSelectedModel(value: string | null): value is SelectedModel {
     ((SELECTABLE_MODELS as readonly string[]).includes(value) ||
       isZenModel(value) ||
       isKiroModel(value) ||
-      isLovableModel(value))
+      isLovableModel(value) ||
+      isCoarenaModel(value) ||
+      isCustomModel(value))
   );
 }
 

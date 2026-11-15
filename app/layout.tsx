@@ -1,5 +1,10 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import localFont from "next/font/local";
+// NOTE (health-check 2026-10-29): self-hosted Geist instead of next/font/google.
+// The sandbox egress proxy is too slow for Next's font downloads (proxy fetch
+// ~4s vs Next's 3s timeout; Turbopack's native fetch bypasses the proxy and
+// fails on TLS interception), which 500'd every page. Same font files, same
+// CSS variables; only the source changed from Google Fonts to ./fonts/.
 import { cookies, headers } from "next/headers";
 import { withAuth } from "@workos-inc/authkit-nextjs";
 import { isPersonalMode } from "@/lib/auth/personal-mode";
@@ -21,14 +26,16 @@ import {
   parseFirstTouchAttribution,
 } from "@/lib/analytics/acquisition";
 
-const geistSans = Geist({
+const geistSans = localFont({
+  src: "./fonts/Geist-Variable.woff2",
   variable: "--font-geist-sans",
-  subsets: ["latin"],
+  weight: "100 900",
 });
 
-const geistMono = Geist_Mono({
+const geistMono = localFont({
+  src: "./fonts/GeistMono-Variable.woff2",
   variable: "--font-geist-mono",
-  subsets: ["latin"],
+  weight: "100 900",
 });
 
 const APP_NAME = "HackerAI";

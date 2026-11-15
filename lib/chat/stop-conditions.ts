@@ -84,7 +84,10 @@ export function tokenExhaustedAfterSummarization(state: {
 }
 
 export const PREEMPTIVE_TIMEOUT_FINISH_REASON = "preemptive-timeout";
-export const AGENT_MAX_STREAM_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+// Must stay below the Vercel Hobby 300s function cap (with the same 60s
+// safety buffer the pre-emptive timeout uses) so agent runs stop cleanly
+// between steps instead of being killed mid-stream.
+export const AGENT_MAX_STREAM_DURATION_MS = 4 * 60 * 1000; // 4 minutes
 
 export function elapsedTimeExceeds(state: {
   maxDurationMs: number;

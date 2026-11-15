@@ -56,6 +56,7 @@ import {
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
+  RUN_TERMINAL_TURN_SAFE_TIMEOUT_SECONDS,
   createRunTerminalCmdToolSchema,
 } from "./schemas";
 import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
@@ -68,7 +69,6 @@ import {
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
 const MAX_TIMEOUT_SECONDS = RUN_TERMINAL_MAX_TIMEOUT_SECONDS;
-const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // Once an interactive PTY emits its first bytes, treat `quietMs` of silence
 // as "settled" (prompt drew, REPL banner finished, etc.). Lets `bash`/`python3`
 // return in ~half a second instead of blocking the user-supplied timeout
@@ -257,11 +257,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           );
       };
       const drainEmitQueue = () => emitQueue;
-      // Calculate effective stream timeout (capped at MAX_TIMEOUT_SECONDS)
-      // This controls how long we wait for output, not how long the command runs
+      // Calculate effective stream timeout (capped at MAX_TIMEOUT_SECONDS).
+      // This controls how long we wait for output, not how long the command runs.
+      // The wait is additionally capped below the 240s pre-emptive turn abort:
+      // a wait reaching the abort gets the command KILLED, while a wait ending
+      // first returns a reusable session the agent polls to completion.
       const effectiveStreamTimeout = Math.min(
         timeout ?? DEFAULT_STREAM_TIMEOUT_SECONDS,
         MAX_TIMEOUT_SECONDS,
+        RUN_TERMINAL_TURN_SAFE_TIMEOUT_SECONDS,
       );
 
       let terminalInspection: AgentAutoReviewTerminalInspection | undefined;
@@ -729,13 +733,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             };
 
             const shouldTerminateNoisyTimedOutCommand = () => {
-              if (is_background || !handler) return false;
-              return (
-                handler.wasTruncated() ||
-                handler.wasFullOutputCapped() ||
-                handler.getBufferedCharCount() >=
-                  NOISY_TIMEOUT_MIN_BUFFERED_CHARS
-              );
+              // Never terminate on timeout. A verbose long-running command
+              // (e.g. `go install -v`) killed here loses all its work and the
+              // next turn restarts it from scratch, looping against the turn
+              // time limit forever. Session output is ring-buffered (256KB
+              // cap in the PTY session manager) and returned output is
+              // truncated, so returning the session is safe: the agent polls
+              // it to completion instead.
+              void is_background;
+              void handler;
+              return false;
             };
 
             const logNoisyTimeout = (fields: {
@@ -1061,6 +1068,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     : commandAbortController.signal,
                   onCancelReady: (cancel: () => Promise<boolean>) => {
                     cancelCentrifugoCommand = cancel;
+                  },
+                  // Bind the parked session to the agent-side commandId
+                  // so later turns can re-attach via command_status.
+                  // commandSession is always set here: runPromise chains
+                  // off commandSessionReady.
+                  onCommandId: (id: string) => {
+                    if (commandSession) {
+                      void ptySessionManager.setSessionKey(
+                        ptyScopeId,
+                        commandSession.sessionId,
+                        id,
+                      );
+                    }
                   },
                 }
               : isE2BSandbox(sandboxInstance)

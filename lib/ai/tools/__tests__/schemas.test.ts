@@ -27,7 +27,7 @@ describe("agent tool schema descriptions", () => {
       "Process running with session ID X",
     );
     expect(fullAccessDescription).toContain(
-      "a detached PID is not a reusable terminal session",
+      "NEVER re-run the command while its PID is still alive",
     );
     expect(fullAccessDescription).toContain("append ` | cat` to the command");
 

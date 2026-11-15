@@ -43,10 +43,22 @@ const personalAuthkitWebpackAliases = {
 const nextConfig: NextConfig = {
   // Emit a minimal self-contained server at `.next/standalone` for container
   // hosts (Render, Fly, self-hosted Docker). `docker/Dockerfile.web:28` copies
-  // that directory; without this the image build fails. Vercel ignores this
-  // setting, so leaving it on is safe for any target.
-  output: "standalone",
-  allowedDevOrigins: ["127.0.0.1", "10.126.148.254", "*.trycloudflare.com"],
+  // that directory; without this the image build fails. EXCEPT on Vercel:
+  // standalone output breaks Vercel's Turbopack build (onBuildComplete looks
+  // for `.next/next-server.js.nft.json`, which the standalone layout does not
+  // emit). Vercel sets VERCEL=1 at build time, so keep standalone everywhere
+  // else and disable it only there.
+  output: process.env.VERCEL ? undefined : "standalone",
+  allowedDevOrigins: [
+    "127.0.0.1",
+    "10.126.148.254",
+    "*.trycloudflare.com",
+    // Public tunnel hosts rotate; wildcards cover every rotation.
+    "**.free.pinggy.net",
+    "**.run.pinggy-free.link",
+    "**.pinggy.link",
+    "**.serveo.net",
+  ],
   devIndicators: false,
   productionBrowserSourceMaps: posthogSourceMapsEnabled,
   typescript: {

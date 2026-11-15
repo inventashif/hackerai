@@ -535,6 +535,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         displayName?: string;
         signal?: AbortSignal;
         onCancelReady?: (cancel: () => Promise<boolean>) => void;
+        /**
+         * Fired with the commandId as soon as the command is created, so
+         * the caller can bind its parked session to the agent-side command
+         * for cross-turn re-attachment (command_status queries).
+         */
+        onCommandId?: (commandId: string) => void;
       },
     ): Promise<{
       stdout: string;
@@ -543,6 +549,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       pid?: number;
     }> => {
       const commandId = crypto.randomUUID();
+      opts?.onCommandId?.(commandId);
       const timeout = opts?.timeoutMs ?? 30000;
       const channel = sandboxConnectionChannel(
         this.userId,
@@ -891,13 +898,21 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             }
 
             if (settled) return;
+            // The agent enforces the published `timeout` as a hard kill.
+            // It must NOT be the server's wait window (4 min): a command
+            // parked in a session at the 150s wait cap has to keep
+            // running across turns. The agent-side bound is the session
+            // lifetime (60 min, matching the PTY cap); the server still
+            // cancels promptly on abort/close, and its own wait window
+            // stays governed by `timeout` above.
+            const AGENT_COMMAND_LIFETIME_MS = 60 * 60 * 1000;
             const commandMessage: CommandMessage = {
               type: "command",
               commandId,
               command,
               env: opts?.envVars,
               cwd: opts?.cwd ?? this.workingDirectory,
-              timeout,
+              timeout: AGENT_COMMAND_LIFETIME_MS,
               background: opts?.background,
               displayName: opts?.displayName,
               chatId: this.chatId,

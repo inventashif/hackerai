@@ -7,6 +7,12 @@ import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
 import { isOpenCodeZenEnabled } from "@/lib/auth/personal-mode";
 import { createKiroProvider } from "./providers/kiro";
 import {
+  createCustomOpenAIProvider,
+  getCustomModelName,
+  isCustomModelKey,
+  type CustomProviderConfig,
+} from "./providers/custom-openai";
+import {
   getKiroModelName,
   isKiroModelKey,
   KIRO_DEFAULT_CUTOFF,
@@ -22,6 +28,14 @@ import {
   LOVABLE_MODELS,
   lovableModelUsesResponsesApi,
 } from "./providers/lovable-models";
+import { createCoarenaProvider } from "./providers/coarena";
+import {
+  COARENA_DEFAULT_CUTOFF,
+  COARENA_MODEL_KEYS,
+  COARENA_MODELS,
+  getCoarenaModelName,
+  isCoarenaModelKey,
+} from "./providers/coarena-models";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -244,6 +258,20 @@ const resolveZenModelId = (openRouterSlug: string): string => {
   if (isKnownZenFreeModelId(openRouterSlug)) {
     return openRouterSlug;
   }
+  const baseUrl =
+    process.env.OPENCODE_ZEN_BASE_URL?.trim() || "https://opencode.ai/zen/v1";
+  const isCustomProvider = !baseUrl.includes("opencode.ai");
+  // When using a custom provider (e.g. NVIDIA), direct provider model IDs
+  // pass through unchanged so the user's selection from the model listing
+  // is honored. NVIDIA IDs use orgs like z-ai, moonshotai, nvidia,
+  // deepseek-ai, meta — distinct from OpenRouter slugs like
+  // "deepseek/deepseek-v4-flash-0731".
+  if (isCustomProvider) {
+    const nvidiaOrgs = ["z-ai/", "moonshotai/", "nvidia/", "deepseek-ai/", "meta/", "01-ai/", "adept/", "ai21labs/", "aisingapore/", "bigcode/", "databricks/", "google/", "ibm/", "microsoft/", "mistralai/", "nv-mistralai/"];
+    if (nvidiaOrgs.some((org) => openRouterSlug.startsWith(org))) {
+      return openRouterSlug;
+    }
+  }
   const configured = process.env.OPENCODE_ZEN_MODEL?.trim();
   const standard =
     process.env.OPENCODE_ZEN_MODEL_STANDARD?.trim() ||
@@ -383,11 +411,17 @@ const lovableProviders = Object.fromEntries(
   Object.keys(LOVABLE_MODELS).map((k) => [k, lovableFactory(k)]),
 ) as Record<string, any>;
 
+const coarenaFactory = createCoarenaProvider();
+const coarenaProviders = Object.fromEntries(
+  Object.keys(COARENA_MODELS).map((k) => [k, coarenaFactory(k)]),
+) as Record<string, any>;
+
 const baseProviders = {
   ...buildProviderMap(createLanguageModelFactory()),
   ...buildZenFreeProviders(createLanguageModelFactory()),
   ...kiroProviders,
   ...lovableProviders,
+  ...coarenaProviders,
 } as Record<string, any>;
 
 // Also handle any future free models dynamically (e.g., new -free suffix)
@@ -433,6 +467,10 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   ...Object.fromEntries(
     LOVABLE_MODEL_KEYS.map((key) => [key, LOVABLE_DEFAULT_CUTOFF]),
   ),
+  // CoArena models, derived from the catalog (see Kiro above).
+  ...Object.fromEntries(
+    COARENA_MODEL_KEYS.map((key) => [key, COARENA_DEFAULT_CUTOFF]),
+  ),
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
@@ -471,6 +509,10 @@ export const modelDisplayNames: Record<ModelName, string> &
   ...Object.fromEntries(
     LOVABLE_MODEL_KEYS.map((key) => [key, getLovableModelName(key)]),
   ),
+  // CoArena models, derived from the catalog (see Kiro above).
+  ...Object.fromEntries(
+    COARENA_MODEL_KEYS.map((key) => [key, getCoarenaModelName(key)]),
+  ),
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
@@ -479,6 +521,10 @@ export const getModelDisplayName = (modelName: ModelName): string => {
   if (isKiroModelKey(modelName)) return getKiroModelName(modelName);
   // Gateway-only Lovable models absent from the static catalog get a derived label.
   if (isLovableModelKey(modelName)) return getLovableModelName(modelName);
+  // Gateway-only CoArena models absent from the static catalog get a derived label.
+  if (isCoarenaModelKey(modelName)) return getCoarenaModelName(modelName);
+  // User-configured custom provider models get a derived label.
+  if (isCustomModelKey(modelName)) return getCustomModelName(modelName);
   if (
     isKnownZenFreeModelId(modelName) &&
     (KNOWN_ZEN_FREE_MODELS as readonly string[]).includes(modelName)
@@ -501,6 +547,7 @@ export const getModelCutoffDate = (
     return "August 2026";
   if (isKiroModelKey(modelName)) return KIRO_DEFAULT_CUTOFF;
   if (isLovableModelKey(modelName)) return LOVABLE_DEFAULT_CUTOFF;
+  if (isCoarenaModelKey(modelName)) return COARENA_DEFAULT_CUTOFF;
   return modelCutoffDates[modelName];
 };
 
@@ -606,6 +653,14 @@ export function resolveTierToProviderKey(
   if (typeof tier === "string" && isLovableModelKey(tier)) {
     return tier as ModelName;
   }
+  // Direct CoArena model selection also bypasses tier mapping.
+  if (typeof tier === "string" && isCoarenaModelKey(tier)) {
+    return tier as ModelName;
+  }
+  // Direct custom provider model selection also bypasses tier mapping.
+  if (typeof tier === "string" && isCustomModelKey(tier)) {
+    return tier as ModelName;
+  }
   switch (tier) {
     case "hackerai-standard":
       return "model-deepseek-v4-flash-0731";
@@ -644,9 +699,43 @@ export const myProvider = {
     if (isLovableModelKey(modelId)) {
       return lovableFactory(modelId);
     }
+    // CoArena models exposed but the static catalog doesn't list yet.
+    if (isCoarenaModelKey(modelId)) {
+      return coarenaFactory(modelId);
+    }
+    // Custom provider models need the requesting user's saved config, which
+    // the shared module-level provider never has. They only resolve through
+    // a request-scoped provider built by `createTrackedProvider(config)`.
+    if (isCustomModelKey(modelId)) {
+      throw new Error(
+        `Custom provider model "${modelId}" is not configured for this request. ` +
+          "Save a base URL and API key in Settings > Custom Provider and select the model from the picker.",
+      );
+    }
     // Fallback to base provider (will throw if not found, preserving original behavior)
     return (baseMyProvider as any).languageModel(modelId);
   },
 } as typeof baseMyProvider;
 
-export const createTrackedProvider = () => myProvider;
+export type { CustomProviderConfig };
+
+/**
+ * Build the provider for one chat request. Without a custom config this is
+ * the shared module-level provider. With one, `custom-*` keys resolve
+ * against the user's saved endpoint via a per-request client; every other
+ * key delegates to the shared provider. The per-request client is never
+ * shared across requests.
+ */
+export const createTrackedProvider = (customConfig?: CustomProviderConfig) => {
+  if (!customConfig) return myProvider;
+  const customFactory = createCustomOpenAIProvider(customConfig);
+  return {
+    ...myProvider,
+    languageModel: (modelId: string) => {
+      if (isCustomModelKey(modelId)) {
+        return customFactory(modelId);
+      }
+      return myProvider.languageModel(modelId);
+    },
+  } as typeof myProvider;
+};

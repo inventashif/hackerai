@@ -107,6 +107,7 @@ import {
   updateChatTitle,
   getMessagesByChatId,
   getUserCustomization,
+  getCustomProviderConfigForRequest,
   prepareForNewStream,
   startStream,
 } from "@/lib/db/actions";
@@ -116,6 +117,7 @@ import {
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
+import { isCustomModel } from "@/types/chat";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
   createAuxiliaryVisionFailoverController,
@@ -351,17 +353,18 @@ export const createChatHandler = () => {
       });
 
       // Pre-emptive abort fires before Vercel's hard request timeout so we
-      // can flush logs and refund usage; agent mode uses elapsedTimeExceeds.
+      // can flush logs and refund usage. Agent mode needs it too: its
+      // elapsed-time stop condition only fires between steps, so a single
+      // long tool call would otherwise run past the 300s Hobby cap and
+      // Vercel would kill the function mid-stream ("Error in input stream").
       const userStopSignal = new AbortController();
-      if (!isAgentMode(mode)) {
-        preemptiveTimeout = createPreemptiveTimeout({
-          chatId,
-          endpoint,
-          abortController: userStopSignal,
-          requestId: req.headers.get("x-vercel-id") ?? undefined,
-          userId,
-        });
-      }
+      preemptiveTimeout = createPreemptiveTimeout({
+        chatId,
+        endpoint,
+        abortController: userStopSignal,
+        requestId: req.headers.get("x-vercel-id") ?? undefined,
+        userId,
+      });
 
       const userCustomization = await getUserCustomization({ userId });
 
@@ -969,7 +972,18 @@ export const createChatHandler = () => {
                 )
               : Promise.resolve(undefined);
 
-            const trackedProvider = createTrackedProvider();
+            // A custom provider selection needs the user's saved endpoint
+            // config before the provider is built: the factory is
+            // synchronous, so the async fetch happens here, once per
+            // request, and the config is threaded into a request-scoped
+            // provider. Without a saved config the selection fails loudly
+            // at model-resolution time (see `myProvider.languageModel`).
+            const customProviderConfig = isCustomModel(selectedModel)
+              ? await getCustomProviderConfigForRequest(userId)
+              : null;
+            const trackedProvider = createTrackedProvider(
+              customProviderConfig ?? undefined,
+            );
 
             let currentSystemPrompt = await systemPrompt(
               userId,
@@ -2503,6 +2517,12 @@ export const createChatHandler = () => {
                       logStep("flush_telemetry", stepStart);
                     }
 
+                    // A preemptive timeout aborts the stream mid-step, so the
+                    // runner's own elapsed-timeout flag and finish reason may
+                    // never be set. Without a stop source here the run ends
+                    // silently: no auto-continue signal, no finish notice, no
+                    // Continue button. Treat the abort itself as the elapsed
+                    // timeout stop source so agent runs always chain on.
                     const autoContinueStopSource =
                       getAgentAutoContinueStopSource({
                         finishReason: state.streamFinishReason,
@@ -2512,7 +2532,7 @@ export const createChatHandler = () => {
                           state.stoppedDueToElapsedTimeout,
                         stoppedDueToPostSummarizationIncomplete:
                           state.stoppedDueToPostSummarizationIncomplete,
-                      });
+                      }) ?? (isPreemptiveAbort ? "elapsed_timeout" : null);
                     if (autoContinueStopSource && isAgentMode(mode)) {
                       writeAutoContinue(writer);
                       phLogger.info("Agent auto-continue signaled", {

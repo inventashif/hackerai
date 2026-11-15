@@ -85,3 +85,4 @@ packages/desktop/src-tauri/target/
 public/.well-known/jwks.json
 
 .trigger
+.env*

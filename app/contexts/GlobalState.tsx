@@ -473,7 +473,9 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     desktopBridgeActive,
     desktopBridgeStatus,
     retryDesktopBridge,
-  } = useSandboxPreference(!!user);
+  } = useSandboxPreference(
+    !!user || process.env.NEXT_PUBLIC_PERSONAL_MODE === "true",
+  );
 
   const [agentPermissionMode, setAgentPermissionMode] =
     useState<AgentPermissionMode>(() => readAgentPermissionMode());
@@ -485,7 +487,9 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   // Check for available local sandbox connections
   const localConnections = useQuery(
     api.localSandbox.listConnections,
-    user ? undefined : "skip",
+    user || process.env.NEXT_PUBLIC_PERSONAL_MODE === "true"
+      ? undefined
+      : "skip",
   );
   const hasLocalSandbox = useMemo(
     () => desktopBridgeActive || (localConnections?.length ?? 0) > 0,

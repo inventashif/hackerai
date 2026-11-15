@@ -254,7 +254,7 @@ ENV AGENT_BROWSER_ARGS="--disable-blink-features=AutomationControlled,--no-first
 ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/agent-browser-screenshots
 # Keep the browser daemon available across one maximum-length terminal command
 # plus a five-minute buffer, then reclaim abandoned Chromium processes.
-ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=900000
+ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=540000
 
 RUN npm install -g --cache /tmp/npm-cache agent-browser@0.35.1 && \
     rm -rf /tmp/npm-cache && \

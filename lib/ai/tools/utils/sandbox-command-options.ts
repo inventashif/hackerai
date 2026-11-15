@@ -1,7 +1,10 @@
 import type { AnySandbox } from "@/types";
 import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
 
-export const MAX_COMMAND_EXECUTION_TIME = 10 * 60 * 1000; // 10 minutes
+// Must stay below the Vercel Hobby 300s function cap (same 60s safety
+// buffer as the pre-emptive timeout) so a single long command times out
+// cleanly instead of the function being killed mid-stream.
+export const MAX_COMMAND_EXECUTION_TIME = 4 * 60 * 1000; // 4 minutes
 
 /**
  * Common directories where user-installed CLI tools live (Go, Rust, Homebrew, etc.).
@@ -9,6 +12,7 @@ export const MAX_COMMAND_EXECUTION_TIME = 10 * 60 * 1000; // 10 minutes
  */
 const LOCAL_EXTRA_PATH_DIRS = [
   "$HOME/go/bin",
+  "$HOME/gopath/bin",
   "$HOME/.local/bin",
   "$HOME/.cargo/bin",
   "/usr/local/bin",

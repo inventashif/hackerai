@@ -433,7 +433,7 @@ describe("useAutoContinue", () => {
     expect(result.current.isAutoContinuing).toBe(false);
   });
 
-  it("clears automatic continuation and its pending signal on error", () => {
+  it("chains on error when a pending auto-continue signal exists", () => {
     const sendMessage = jest.fn();
     let params = buildParams({ status: "streaming", sendMessage });
 
@@ -445,14 +445,42 @@ describe("useAutoContinue", () => {
     pushAutoContinue(result);
     expect(result.current.isAutoContinuing).toBe(true);
 
+    // The stream broke AFTER the server signaled: the work is unfinished,
+    // so the error must chain instead of dropping the pending signal.
+    params = { ...params, status: "error" };
+    rerender(params);
+
+    expect(result.current.isAutoContinuing).toBe(true);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(
+      { text: AUTO_CONTINUE_PROMPT, metadata: { isAutoContinue: true } },
+      expect.objectContaining({
+        body: expect.objectContaining({ isAutoContinue: true }),
+      }),
+    );
+  });
+
+  it("clears automatic continuation on error when no signal exists and the run showed no activity", () => {
+    const sendMessage = jest.fn();
+    let params = buildParams({ status: "streaming", sendMessage });
+
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      { initialProps: params, wrapper: createWrapper() },
+    );
+
+    // No signal pushed, no stream activity, run never reached "submitted":
+    // nothing proves unfinished work, so the error clears instead of chaining.
     params = { ...params, status: "error" };
     rerender(params);
 
     expect(result.current.isAutoContinuing).toBe(false);
     expect(result.current.isAutoResuming).toBe(false);
 
-    params = { ...params, status: "ready" };
-    rerender(params);
     act(() => {
       jest.advanceTimersByTime(500);
     });

@@ -11,6 +11,11 @@ let client: ConvexHttpClient | null = null;
 let overrideUrl: string | undefined;
 
 export function getConvexUrl(): string {
+  // Server-side backend calls should use localhost directly, not the public
+  // tunnel URL (which may be unreachable from the server or add latency).
+  // CONVEX_BACKEND_URL is set to http://127.0.0.1:3210 in .env.local.
+  const backendUrl = process.env.CONVEX_BACKEND_URL?.trim();
+  if (backendUrl) return backendUrl;
   const url = overrideUrl ?? process.env.NEXT_PUBLIC_CONVEX_URL;
   if (!url) {
     throw new Error("NEXT_PUBLIC_CONVEX_URL is not set");

@@ -248,8 +248,8 @@ export const createPreemptiveTimeout = ({
   userId,
   safetyBuffer = 60,
 }: PreemptiveTimeoutOptions) => {
-  // Use endpoint-specific max duration based on Vercel function limits
-  const maxDuration = endpoint === "/api/chat" ? 420 : 800;
+  // Mirror the route segment maxDuration values (Vercel Hobby plan cap: 300s).
+  const maxDuration = 300;
   const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
   const startTime = Date.now();
 

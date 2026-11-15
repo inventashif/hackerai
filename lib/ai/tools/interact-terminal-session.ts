@@ -16,6 +16,7 @@ import { translateInput } from "./utils/pty-keys";
 import {
   INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS,
   INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS,
+  INTERACT_TERMINAL_TURN_SAFE_WAIT_SECONDS,
   createInteractTerminalSessionToolSchema,
   interactTerminalSessionTool,
 } from "./schemas";
@@ -24,12 +25,17 @@ import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
+import { isCentrifugoSandbox } from "./utils/sandbox-types";
+import { loadPtySessionRecord } from "./utils/pty-session-registry";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
 const DEFAULT_WAIT_TIMEOUT_SECONDS =
   INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS;
-const MAX_WAIT_TIMEOUT_SECONDS = INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS;
+const MAX_WAIT_TIMEOUT_SECONDS = Math.min(
+  INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS,
+  INTERACT_TERMINAL_TURN_SAFE_WAIT_SECONDS,
+);
 // Brief window to capture the immediate response to a `send` (e.g. a prompt
 // echoing "Hello, X!"). Too short and we miss instant CLI replies; too long
 // and we block the agent on long-running processes that need explicit `wait`.
@@ -128,24 +134,70 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         result: { output: "", error },
       });
 
-      const getSessionOrError = (
+      const getSessionOrError = async (
         actionName: string,
         sid: string | undefined,
-      ): { session: PtySession } | { error: ActionResult } => {
+      ): Promise<{ session: PtySession } | { error: ActionResult }> => {
         if (!sid) {
           return {
             error: errorResult(`action=${actionName} requires \`session\`.`),
           };
         }
         const found = ptySessionManager.get(ptyScopeId, sid);
-        if (!found) {
-          return {
-            error: errorResult(
-              `Session ${sid} not found. Only use the exact session ID returned by run_terminal_cmd; a PID is not a session ID and must never be converted into one.`,
-            ),
-          };
+        if (found) return { session: found };
+        // Cross-instance restore: the session may have been created by an
+        // earlier turn on another server instance. Its durable registry
+        // record + the sandbox-side PTY let this instance re-attach.
+        const restored = await tryRestoreSession(sid);
+        if (restored) return { session: restored };
+        return {
+          error: errorResult(
+            `Session ${sid} not found on this server and could not be restored (its record is gone or the sandbox no longer has it). Do NOT re-run the command: it may still be running. Check with ps using the PID from the earlier timeout message, and read its output file if it has one. If the process is gone and you must restart it, restart it detached with output to a file (run_terminal_cmd guideline 5). Only use the exact session ID returned by run_terminal_cmd; a PID is not a session ID and must never be converted into one.`,
+          ),
+        };
+      };
+
+      const tryRestoreSession = async (
+        sid: string,
+      ): Promise<PtySession | null> => {
+        try {
+          const record = await loadPtySessionRecord(ptyScopeId, sid);
+          if (!record) return null;
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager: context.sandboxManager,
+          });
+          if (
+            getAgentApprovalSandboxIdentity(sandbox) !==
+            record.sandboxIdentity
+          ) {
+            return null;
+          }
+          if (!isCentrifugoSandbox(sandbox)) return null;
+          if (record.kind === "command") {
+            const { attachToCentrifugoCommandHandle } = await import(
+              "./utils/centrifugo-command-adapter"
+            );
+            const handle = await attachToCentrifugoCommandHandle(sandbox, {
+              commandId: record.handleUuid,
+            });
+            return await ptySessionManager.restore(ptyScopeId, record, handle);
+          }
+          const { attachToCentrifugoPtyHandle } = await import(
+            "./utils/centrifugo-pty-adapter"
+          );
+          const handle = await attachToCentrifugoPtyHandle(sandbox, {
+            sessionId: record.handleUuid,
+            cols: record.cols,
+            rows: record.rows,
+          });
+          return await ptySessionManager.restore(ptyScopeId, record, handle);
+        } catch (err) {
+          console.error(
+            "[interact-terminal-session] session restore failed:",
+            err,
+          );
+          return null;
         }
-        return { session: found };
       };
 
       const emitPriorContext = (session: PtySession) => {
@@ -314,7 +366,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             'action=send requires `input`. To submit just Enter (e.g. to terminate a Python multi-line block or accept a default prompt), pass input="Enter" or input="\\n".',
           );
         }
-        const lookup = getSessionOrError("send", sessionId);
+        const lookup = await getSessionOrError("send", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
         if (session.kind === "command") {
@@ -408,7 +460,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
 
       // ─── Handler: wait ─────────────────────────────────────────────────────
       const handleWait = async (): Promise<ActionResult> => {
-        const lookup = getSessionOrError("wait", sessionId);
+        const lookup = await getSessionOrError("wait", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
@@ -444,7 +496,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
 
       // ─── Handler: view ─────────────────────────────────────────────────────
       const handleView = async (): Promise<ActionResult> => {
-        const lookup = getSessionOrError("view", sessionId);
+        const lookup = await getSessionOrError("view", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
@@ -473,7 +525,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
 
       // ─── Handler: kill ─────────────────────────────────────────────────────
       const handleKill = async (): Promise<ActionResult> => {
-        const lookup = getSessionOrError("kill", sessionId);
+        const lookup = await getSessionOrError("kill", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 

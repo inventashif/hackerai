@@ -449,6 +449,18 @@ export default defineSchema({
     ),
   }).index("by_user_id", ["user_id"]),
 
+  // Custom OpenAI-compatible provider (one per user, set in Settings >
+  // Custom Provider). The API key is stored here and is only ever returned
+  // to the backend via the service-key query — the authed client query
+  // returns hasKey instead of the value.
+  custom_provider_configs: defineTable({
+    user_id: v.string(),
+    base_url: v.string(),
+    api_key: v.string(),
+    model_id: v.string(),
+    updated_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
+
   // Extra usage (created when user enables extra usage)
   // Note: Most monetary values stored in POINTS for precision (1 point = $0.0001, matching rate limiting)
   // This avoids precision loss when deducting sub-cent amounts from balance.

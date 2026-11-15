@@ -57,7 +57,13 @@ import {
   getDefaultModelForMode,
   type ModelOption,
 } from "./ModelSelector/constants";
-import { isKiroModel, isLovableModel, isZenModel } from "@/types/chat";
+import {
+  isCoarenaModel,
+  isCustomModel,
+  isKiroModel,
+  isLovableModel,
+  isZenModel,
+} from "@/types/chat";
 
 // ── Kiro models (fetched from the local Kiro Gateway via /api/kiro/status) ──
 function useKiroModels(open: boolean, enabled: boolean) {
@@ -142,6 +148,105 @@ function useLovableModels(open: boolean, enabled: boolean) {
               description: "Via Lovable AI Gateway",
               poweredBy: model.modelId,
               thinking: model.supportsThinking,
+            })),
+          );
+        },
+      )
+      .catch(() => {
+        if (!cancelled) setModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, enabled, models]);
+
+  return { models, loading: open && enabled && models === null };
+}
+
+function useCoarenaModels(open: boolean, enabled: boolean) {
+  const [models, setModels] = useState<ModelOption[] | null>(null);
+
+  useEffect(() => {
+    if (!open || !enabled || models !== null) return;
+    let cancelled = false;
+    fetch("/api/coarena/status")
+      .then((r) =>
+        r.ok ? r.json() : Promise.reject(new Error(String(r.status))),
+      )
+      .then(
+        (json: {
+          available?: boolean;
+          models?: {
+            id: string;
+            modelId: string;
+            name: string;
+            supportsThinking: boolean;
+          }[];
+        }) => {
+          if (cancelled) return;
+          if (!json.available) {
+            setModels([]);
+            return;
+          }
+          const list = Array.isArray(json.models) ? json.models : [];
+          setModels(
+            list.map((model) => ({
+              id: model.id as SelectedModel,
+              label: model.name.replace(/\s*\(CoArena\)$/, ""),
+              description: "Via CoArena",
+              poweredBy: model.modelId,
+              thinking: model.supportsThinking,
+            })),
+          );
+        },
+      )
+      .catch(() => {
+        if (!cancelled) setModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, enabled, models]);
+
+  return { models, loading: open && enabled && models === null };
+}
+
+// ── Custom provider models (fetched from the user's saved endpoint) ──
+function useCustomModels(open: boolean, enabled: boolean) {
+  const [models, setModels] = useState<ModelOption[] | null>(null);
+
+  useEffect(() => {
+    // Unlike the gateway hooks, an empty list refetches on the next open:
+    // the user typically saves their endpoint in Settings after first
+    // opening the picker, and the section must appear without a reload.
+    if (!open || !enabled || (models !== null && models.length > 0)) return;
+    let cancelled = false;
+    fetch("/api/custom-provider/models")
+      .then((r) =>
+        r.ok ? r.json() : Promise.reject(new Error(String(r.status))),
+      )
+      .then(
+        (json: {
+          available?: boolean;
+          models?: { id: string; modelId: string; name: string }[];
+        }) => {
+          if (cancelled) return;
+          if (!json.available) {
+            setModels([]);
+            return;
+          }
+          const list = Array.isArray(json.models) ? json.models : [];
+          setModels(
+            list.map((m) => ({
+              id: m.id as SelectedModel,
+              label: m.name
+                .split(/[-_/]/)
+                .map((w) =>
+                  w ? w.charAt(0).toUpperCase() + w.slice(1) : w,
+                )
+                .join(" "),
+              description: "Via custom provider",
+              poweredBy: m.modelId,
             })),
           );
         },
@@ -445,6 +550,10 @@ const ModelOptionList = ({
   kiroModelsLoading,
   lovableModels,
   lovableModelsLoading,
+  coarenaModels,
+  coarenaModelsLoading,
+  customModels,
+  customModelsLoading,
 }: {
   options: ModelOption[];
   value: SelectedModel;
@@ -463,6 +572,10 @@ const ModelOptionList = ({
   kiroModelsLoading?: boolean;
   lovableModels?: ModelOption[] | null;
   lovableModelsLoading?: boolean;
+  coarenaModels?: ModelOption[] | null;
+  coarenaModelsLoading?: boolean;
+  customModels?: ModelOption[] | null;
+  customModelsLoading?: boolean;
 }) => (
   <div className="flex flex-col gap-px">
     {isFreeUser ? (
@@ -693,6 +806,71 @@ const ModelOptionList = ({
         </div>
       </>
     ) : null}
+
+    {coarenaModels && coarenaModels.length > 0 ? (
+      <>
+        <div className="my-1 border-b border-border/50" />
+        <div className="px-2 pt-1 pb-0.5">
+          <span className="text-[11px] font-semibold tracking-widest text-muted-foreground/70">
+            COARENA
+          </span>
+        </div>
+        {coarenaModels.map((option) => (
+          <div key={option.id}>
+            <ModelOptionButton
+              option={option}
+              isSelected={value === option.id}
+              isLocked={false}
+              isPending={false}
+              subscription={subscription}
+              onSelect={onSelect}
+              mobile={mobile}
+            />
+          </div>
+        ))}
+      </>
+    ) : coarenaModelsLoading ? (
+      <>
+        <div className="my-1 border-b border-border/50" />
+        <div className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" /> Loading CoArena models…
+        </div>
+      </>
+    ) : null}
+
+    {customModels && customModels.length > 0 ? (
+      <>
+        <div className="my-1 border-b border-border/50" />
+        <div className="px-2 pt-1 pb-0.5">
+          <span className="text-[11px] font-semibold tracking-widest text-muted-foreground/70">
+            CUSTOM PROVIDER
+          </span>
+        </div>
+        {customModels.map((option) => (
+          <div key={option.id}>
+            <ModelOptionButton
+              option={option}
+              isSelected={value === option.id}
+              // The user pays for their own endpoint, so there is no
+              // per-model subscription lock. Free users never reach this
+              // list (see `useCustomModels` gating).
+              isLocked={false}
+              isPending={false}
+              subscription={subscription}
+              onSelect={onSelect}
+              mobile={mobile}
+            />
+          </div>
+        ))}
+      </>
+    ) : customModelsLoading ? (
+      <>
+        <div className="my-1 border-b border-border/50" />
+        <div className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" /> Loading custom models…
+        </div>
+      </>
+    ) : null}
   </div>
 );
 
@@ -726,15 +904,19 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       : (normalizeMaxModelForSubscription(subscriptionValue, subscription, {
           extraUsageAvailable: maxModelExtraUsageAvailable,
         }) ?? "auto");
-  // Zen, Kiro, and Lovable models are direct selections — treat them as non-auto
+  // Zen, Kiro, Lovable, CoArena, and custom models are direct selections — treat them as non-auto
   const isZenSelected = isZenModel(displayValue);
   const isKiroSelected = isKiroModel(displayValue);
   const isLovableSelected = isLovableModel(displayValue);
+  const isCoarenaSelected = isCoarenaModel(displayValue);
+  const isCustomSelected = isCustomModel(displayValue);
   const isAuto =
     displayValue === "auto" &&
     !isZenSelected &&
     !isKiroSelected &&
-    !isLovableSelected;
+    !isLovableSelected &&
+    !isCoarenaSelected &&
+    !isCustomSelected;
 
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
 
@@ -749,6 +931,10 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   );
   const { models: lovableModels, loading: lovableModelsLoading } =
     useLovableModels(open, !isFreeUser);
+  const { models: coarenaModels, loading: coarenaModelsLoading } =
+    useCoarenaModels(open, !isFreeUser);
+  const { models: customModels, loading: customModelsLoading } =
+    useCustomModels(open, !isFreeUser);
 
   const effectiveValue = isAuto ? getDefaultModelForMode(mode) : displayValue;
   // Resolve selected label from tier options, or gateway lists
@@ -758,11 +944,19 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const selectedFromLovable = lovableModels?.find(
     (opt) => opt.id === effectiveValue,
   );
+  const selectedFromCoarena = coarenaModels?.find(
+    (opt) => opt.id === effectiveValue,
+  );
+  const selectedFromCustom = customModels?.find(
+    (opt) => opt.id === effectiveValue,
+  );
   const selected =
     selectedFromTier ??
     selectedFromZen ??
     selectedFromKiro ??
     selectedFromLovable ??
+    selectedFromCoarena ??
+    selectedFromCustom ??
     (isZenSelected
       ? {
           id: effectiveValue,
@@ -795,7 +989,27 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
                 .join(" "),
               poweredBy: effectiveValue.replace(/^lovable-/, ""),
             }
-          : options[0]);
+          : isCoarenaSelected
+            ? {
+                id: effectiveValue,
+                label: effectiveValue
+                  .replace(/^coarena-/, "")
+                  .split("-")
+                  .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                  .join(" "),
+                poweredBy: effectiveValue.replace(/^coarena-/, ""),
+              }
+            : isCustomSelected
+            ? {
+                id: effectiveValue,
+                label: effectiveValue
+                  .replace(/^custom-/, "")
+                  .split(/[-_/]/)
+                  .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                  .join(" "),
+                poweredBy: effectiveValue.replace(/^custom-/, ""),
+              }
+            : options[0]);
 
   const isFreeAgent = isFreeUser && isAgentMode(mode);
   const triggerLabel = isFreeAgent
@@ -933,6 +1147,10 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               kiroModelsLoading={kiroModelsLoading}
               lovableModels={lovableModels}
               lovableModelsLoading={lovableModelsLoading}
+              coarenaModels={coarenaModels}
+              coarenaModelsLoading={coarenaModelsLoading}
+              customModels={customModels}
+              customModelsLoading={customModelsLoading}
             />
           </SheetContent>
         </Sheet>
@@ -966,6 +1184,10 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             kiroModelsLoading={kiroModelsLoading}
             lovableModels={lovableModels}
             lovableModelsLoading={lovableModelsLoading}
+            coarenaModels={coarenaModels}
+            coarenaModelsLoading={coarenaModelsLoading}
+            customModels={customModels}
+            customModelsLoading={customModelsLoading}
           />
         </PopoverContent>
       </Popover>

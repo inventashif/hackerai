@@ -1,22 +1,33 @@
 /**
  * Per-chat terminal session store.
  *
- * Lifetime model for M1: sessions live only for the duration of a single
- * assistant streaming response. `chat-handler.onFinish` calls `closeAll(chatId)`
- * to tear everything down. The real source of truth lives inside the E2B
- * sandbox — the Node-side object here is only a per-chat cache with ring
- * buffer, idle/lifetime timers and bookkeeping to compute deltas for
- * `action=wait` / `action=view`.
+ * Lifetime model: the sandbox-side PTY outlives any single server instance.
+ * `closeAll` (called at the end of every assistant turn) DETACHES
+ * Centrifugo-backed sessions — it drops only the local bookkeeping and
+ * keeps the process running plus its durable registry record, so a later
+ * turn (usually on a different serverless instance) can re-attach via
+ * `restore()`. Explicit `close()`/kill, idle expiry, and lifetime expiry
+ * still terminate the process. E2B sessions keep the old closeAll-kills
+ * behavior (no durable registry for them). The agent enforces a PTY
+ * lifetime cap, so a detached session can never leak forever.
  *
  * Most sessions are interactive PTYs. A foreground non-interactive command
  * that outlives its initial wait window is registered as `kind="command"` so
  * the model receives a real opaque session id instead of trying to derive one
- * from an OS PID.
+ * from an OS PID. Command sessions on a Centrifugo sandbox are durable too:
+ * once the command starts, its commandId is bound via `setSessionKey` and
+ * persisted, so later turns re-attach with a `command_status` query instead
+ * of finding the session gone.
  */
 
 import type { PtyHandle } from "./e2b-pty-adapter";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 import type { AgentApprovalSandboxIdentity } from "@/types";
+import {
+  deletePtySessionRecord,
+  savePtySessionRecord,
+  type PtySessionRecord,
+} from "./pty-session-registry";
 
 export const MAX_CONCURRENT_PTYS_PER_CHAT = 10;
 export const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
@@ -47,6 +58,14 @@ export interface PtySession {
   /** Working directory used when the originating command was started. */
   readonly workingDirectory?: string;
   readonly pid: number;
+  /**
+   * Durable agent-side key for this session: the PTY handle UUID or the
+   * one-shot commandId. Present exactly when the session is re-attachable
+   * across turns (persisted in the registry, detached — never killed — at
+   * turn end). For command sessions it is set after creation, once the
+   * command starts, via `setSessionKey`.
+   */
+  sessionKey?: string;
   cols: number;
   rows: number;
   readonly createdAt: number;
@@ -142,73 +161,16 @@ export class PtySessionManager {
     const now = Date.now();
 
     try {
-      const session: InternalSession = {
-        sessionId,
-        chatId,
+      const session = this.registerSession(chatId, sessionId, handle, {
         kind: opts.kind ?? "pty",
-        // Keep a defensive Cloud default for untyped legacy callers while
-        // requiring all current typed call sites to provide the identity.
         sandboxIdentity: opts.sandboxIdentity ?? "e2b",
         originalCommand: opts.originalCommand,
-        ...(opts.workingDirectory
-          ? { workingDirectory: opts.workingDirectory }
-          : {}),
-        get pid() {
-          return handle.pid;
-        },
+        workingDirectory: opts.workingDirectory,
         cols: opts.cols,
         rows: opts.rows,
         createdAt: now,
-        lastActivityAt: now,
-        handle,
-        buffer: [],
-        readCursor: 0,
-        bufferTruncated: false,
-        droppedBytes: 0,
-        idleTimer: null,
-        lifetimeTimer: null,
-        cleanupRetryTimer: null,
-        cleanupFailureCount: 0,
-        unsubscribe: null,
-        closing: false,
-        exitedNaturally: null,
-      };
-
-      // Subscribe to handle output
-      session.unsubscribe = handle.onData((bytes) => {
-        this.onData(session, bytes);
       });
-
-      // idle + lifetime timers
-      this.armIdleTimer(session);
-      session.lifetimeTimer = setTimeout(() => {
-        void this.killAndRemove(session, "lifetime").catch(() => {});
-      }, SESSION_MAX_LIFETIME_MS);
-
-      // Natural exit — mark as exited but keep session around so the model
-      // can still call view/wait to read the final output. closeAll() or
-      // kill will do the actual cleanup.
-      handle.exited
-        .then(
-          (info) => {
-            session.exitedNaturally = { exitCode: info.exitCode };
-          },
-          () => {
-            session.exitedNaturally = { exitCode: null };
-          },
-        )
-        .catch((err) =>
-          console.error("[pty-session-manager] exited handler failed:", err),
-        );
-
-      // Register
-      let chatMap = this.chats.get(chatId);
-      if (!chatMap) {
-        chatMap = new Map();
-        this.chats.set(chatId, chatMap);
-      }
-      chatMap.set(sessionId, session);
-
+      await this.persistSession(session);
       return session;
     } catch (wiringErr) {
       // Handle was spawned but we failed to wire it up — kill it to avoid
@@ -230,6 +192,172 @@ export class PtySessionManager {
       }
       throw wiringErr;
     }
+  }
+
+  /**
+   * Re-attach a session created by an earlier turn (usually on another
+   * serverless instance) from its durable registry record. The caller
+   * supplies an already-attached handle; this wires it under the ORIGINAL
+   * manager id so the model-visible id stays stable across turns. The
+   * registry record is re-saved to refresh its TTL. Never kills the
+   * sandbox process on failure — it belongs to an earlier turn.
+   */
+  async restore(
+    chatId: string,
+    record: PtySessionRecord,
+    handle: PtyHandle,
+  ): Promise<PtySession> {
+    const existing = this.chats.get(chatId)?.get(record.managerId);
+    if (existing) return existing;
+    const chat = this.chats.get(chatId);
+    if (chat && chat.size >= MAX_CONCURRENT_PTYS_PER_CHAT) {
+      throw new Error(
+        `MAX_CONCURRENT_PTYS_PER_CHAT reached (limit=${MAX_CONCURRENT_PTYS_PER_CHAT}) for chatId=${chatId}`,
+      );
+    }
+    const session = this.registerSession(
+      chatId,
+      record.managerId,
+      handle,
+      {
+        kind: record.kind,
+        sandboxIdentity: record.sandboxIdentity,
+        originalCommand: record.originalCommand,
+        workingDirectory: record.workingDirectory,
+        cols: record.cols,
+        rows: record.rows,
+        createdAt: record.createdAt,
+      },
+    );
+    await this.persistSession(session);
+    return session;
+  }
+
+  /**
+   * Bind a durable agent-side key to an existing session and persist its
+   * registry record. Command sessions are created before their command
+   * starts, so the commandId is only known afterwards — the caller reports
+   * it here. Returns false when the session is already gone (nothing to
+   * persist). Safe to call twice with the same key (re-save refreshes TTL).
+   */
+  async setSessionKey(
+    chatId: string,
+    sessionId: string,
+    key: string,
+  ): Promise<boolean> {
+    const session = this.chats.get(chatId)?.get(sessionId);
+    if (!session || !key) return false;
+    session.sessionKey = key;
+    await this.persistSession(session);
+    return true;
+  }
+
+  private registerSession(
+    chatId: string,
+    sessionId: string,
+    handle: PtyHandle,
+    opts: {
+      kind: "pty" | "command";
+      sandboxIdentity: AgentApprovalSandboxIdentity;
+      originalCommand: string;
+      workingDirectory?: string;
+      cols: number;
+      rows: number;
+      createdAt: number;
+    },
+  ): InternalSession {
+    const session: InternalSession = {
+      sessionId,
+      chatId,
+      kind: opts.kind,
+      sandboxIdentity: opts.sandboxIdentity,
+      originalCommand: opts.originalCommand,
+      ...(opts.workingDirectory
+        ? { workingDirectory: opts.workingDirectory }
+        : {}),
+      // PTY handles carry their key from creation; command handles get
+      // theirs later via setSessionKey.
+      ...(handle.sessionKey ? { sessionKey: handle.sessionKey } : {}),
+      get pid() {
+        return handle.pid;
+      },
+      cols: opts.cols,
+      rows: opts.rows,
+      createdAt: opts.createdAt,
+      lastActivityAt: Date.now(),
+      handle,
+      buffer: [],
+      readCursor: 0,
+      bufferTruncated: false,
+      droppedBytes: 0,
+      idleTimer: null,
+      lifetimeTimer: null,
+      cleanupRetryTimer: null,
+      cleanupFailureCount: 0,
+      unsubscribe: null,
+      closing: false,
+      exitedNaturally: null,
+    };
+
+    // Subscribe to handle output
+    session.unsubscribe = handle.onData((bytes) => {
+      this.onData(session, bytes);
+    });
+
+    // idle + lifetime timers
+    this.armIdleTimer(session);
+    const lifetimeRemaining =
+      session.createdAt + SESSION_MAX_LIFETIME_MS - Date.now();
+    session.lifetimeTimer = setTimeout(
+      () => {
+        void this.killAndRemove(session, "lifetime").catch(() => {});
+      },
+      Math.max(0, lifetimeRemaining),
+    );
+
+    // Natural exit — mark as exited but keep session around so the model
+    // can still call view/wait to read the final output. closeAll() or
+    // kill will do the actual cleanup.
+    handle.exited
+      .then(
+        (info) => {
+          session.exitedNaturally = { exitCode: info.exitCode };
+        },
+        () => {
+          session.exitedNaturally = { exitCode: null };
+        },
+      )
+      .catch((err) =>
+        console.error("[pty-session-manager] exited handler failed:", err),
+      );
+
+    // Register
+    let chatMap = this.chats.get(chatId);
+    if (!chatMap) {
+      chatMap = new Map();
+      this.chats.set(chatId, chatMap);
+    }
+    chatMap.set(sessionId, session);
+
+    return session;
+  }
+
+  private async persistSession(session: PtySession): Promise<void> {
+    const handleUuid = session.sessionKey;
+    if (!handleUuid) return;
+    await savePtySessionRecord({
+      handleUuid,
+      managerId: session.sessionId,
+      chatId: session.chatId,
+      sandboxIdentity: session.sandboxIdentity,
+      originalCommand: session.originalCommand,
+      workingDirectory: session.workingDirectory,
+      kind: session.kind,
+      pid: session.handle.pid,
+      createdAt: session.createdAt,
+      cols: session.cols,
+      rows: session.rows,
+    });
   }
 
   get(chatId: string, sessionId: string): PtySession | undefined {
@@ -282,7 +410,29 @@ export class PtySessionManager {
     const chat = this.chats.get(chatId);
     if (!chat) return;
     const sessions = Array.from(chat.values());
-    await Promise.all(sessions.map((s) => this.killAndRemove(s, "closeAll")));
+    await Promise.all(
+      sessions.map((s) =>
+        // Durable (Centrifugo-backed) sessions DETACH at turn end: the
+        // sandbox process keeps running and the registry record stays, so
+        // the next turn can re-attach. Killing here would destroy exactly
+        // the long-running work the model parked in the session. E2B
+        // sessions and keyless command sessions have no registry record
+        // and keep the old kill behavior.
+        s.sessionKey
+          ? this.detachSession(s)
+          : this.killAndRemove(s, "closeAll"),
+      ),
+    );
+  }
+
+  /**
+   * Drop local bookkeeping for a session WITHOUT terminating the sandbox
+   * process and WITHOUT deleting its registry record. The next turn
+   * re-attaches via `restore()`. The agent-side lifetime cap bounds how
+   * long a detached process can run.
+   */
+  private detachSession(session: InternalSession): void {
+    this.unregisterSession(session);
   }
 
   /**
@@ -460,6 +610,13 @@ export class PtySessionManager {
   }
 
   private removeSession(session: InternalSession): void {
+    this.unregisterSession(session);
+    // Best-effort: the registry record must not outlive a killed session,
+    // or a later turn would re-attach to a dead process id.
+    void deletePtySessionRecord(session.chatId, session.sessionId);
+  }
+
+  private unregisterSession(session: InternalSession): void {
     if (session.unsubscribe) {
       try {
         session.unsubscribe();

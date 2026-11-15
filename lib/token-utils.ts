@@ -79,7 +79,7 @@ export const TIMEOUT_MESSAGE = (
 ) => {
   if (session) {
     const pidSuffix = pid ? ` (PID: ${pid})` : "";
-    return `\n\nCommand output paused after ${seconds} seconds. Command continues in terminal session ${session}${pidSuffix}. Use interact_terminal_session with this exact session ID to wait, view, or kill it.`;
+    return `\n\nCommand output paused after ${seconds} seconds. Command continues in terminal session ${session}${pidSuffix}. Use interact_terminal_session with this exact session ID to wait, view, or kill it — the session survives across turns, so keep using the same ID in later turns instead of re-running the command.`;
   }
 
   const pidSuffix = pid ? ` with PID: ${pid}` : "";

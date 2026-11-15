@@ -1747,6 +1747,23 @@ export async function getUserCustomization({ userId }: { userId: string }) {
   }
 }
 
+export async function getCustomProviderConfigForRequest(userId: string) {
+  try {
+    return await getConvexClient().query(
+      api.customProvider.getCustomProviderConfigForBackend,
+      {
+        serviceKey,
+        userId,
+      },
+    );
+  } catch (error) {
+    // No config saved, or the backend query failed: the request proceeds
+    // without a custom provider and a custom selection fails loudly at
+    // model-resolution time instead of silently using the wrong provider.
+    return null;
+  }
+}
+
 export async function setActiveTriggerRun({
   chatId,
   triggerRunId,

@@ -14,6 +14,13 @@
  *   Server  →  pty_input    →  Local runner
  *   Server  →  pty_resize   →  Local runner
  *   Server  →  pty_kill     →  Local runner
+ *
+ * Re-attach flow (a later server instance resuming an existing session):
+ *   Server  →  pty_status        →  Local runner (no pty_create sent)
+ *   Local   →  pty_status_result →  Server  (running/exited/unknown + tail)
+ * The status tail is replayed to the first onData subscriber so the
+ * re-attaching instance starts with the same output history; live data
+ * arriving before the status answer is queued behind the tail.
  */
 
 import { Centrifuge, type Subscription } from "centrifuge";
@@ -32,6 +39,14 @@ import { createResolvableExited } from "./pty-exited-promise";
 export interface CentrifugoPtyOptions extends CreatePtyOptions {
   /** Shell command to execute. Sent inside pty_create — NOT via sendInput. */
   command: string;
+}
+
+/** Options for re-attaching to an existing sandbox-side PTY session. */
+export interface CentrifugoPtyAttachOptions {
+  /** Agent-side session key (the handle UUID from the registry record). */
+  sessionId: string;
+  cols: number;
+  rows: number;
 }
 
 // ── Internal message types (outgoing to local runner) ──────────────────
@@ -68,8 +83,19 @@ interface PtyKillPayload {
   targetConnectionId: string;
 }
 
+interface PtyStatusPayload {
+  type: "pty_status";
+  sessionId: string;
+  requestId: string;
+  targetConnectionId: string;
+}
+
 type PtyOutgoingPayload =
-  PtyCreatePayload | PtyInputPayload | PtyResizePayload | PtyKillPayload;
+  | PtyCreatePayload
+  | PtyInputPayload
+  | PtyResizePayload
+  | PtyKillPayload
+  | PtyStatusPayload;
 
 // ── Incoming message shapes from the local runner ──────────────────────
 
@@ -97,7 +123,22 @@ interface PtyErrorMsg {
   message: string;
 }
 
-type PtyIncomingMsg = PtyReadyMsg | PtyDataMsg | PtyExitMsg | PtyErrorMsg;
+interface PtyStatusResultMsg {
+  type: "pty_status_result";
+  sessionId: string;
+  requestId: string;
+  status: "running" | "exited" | "unknown";
+  pid?: number;
+  exitCode?: number | null;
+  outputTail?: string;
+}
+
+type PtyIncomingMsg =
+  | PtyReadyMsg
+  | PtyDataMsg
+  | PtyExitMsg
+  | PtyErrorMsg
+  | PtyStatusResultMsg;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -138,6 +179,29 @@ function parsePtyMessage(data: unknown): PtyIncomingMsg | null {
         sessionId: msg.sessionId,
         message: msg.message,
       };
+    case "pty_status_result": {
+      if (typeof msg.requestId !== "string") return null;
+      if (
+        msg.status !== "running" &&
+        msg.status !== "exited" &&
+        msg.status !== "unknown"
+      ) {
+        return null;
+      }
+      return {
+        type: "pty_status_result",
+        sessionId: msg.sessionId,
+        requestId: msg.requestId,
+        status: msg.status,
+        ...(typeof msg.pid === "number" ? { pid: msg.pid } : {}),
+        ...(typeof msg.exitCode === "number" || msg.exitCode === null
+          ? { exitCode: msg.exitCode }
+          : {}),
+        ...(typeof msg.outputTail === "string"
+          ? { outputTail: msg.outputTail }
+          : {}),
+      };
+    }
     default:
       return null;
   }
@@ -155,7 +219,38 @@ export async function createCentrifugoPtyHandle(
   sandbox: CentrifugoSandbox,
   opts: CentrifugoPtyOptions,
 ): Promise<PtyHandle> {
-  const sessionId = crypto.randomUUID();
+  return createOrAttachCentrifugoPtyHandle(sandbox, opts);
+}
+
+/**
+ * Re-attach to an existing sandbox-side PTY session (created by an earlier
+ * turn, usually on another server instance). Subscribes to the same channel,
+ * queries `pty_status` instead of sending `pty_create`, and replays the
+ * retained output tail to the first onData subscriber. Rejects when the
+ * agent reports the session unknown or the query times out.
+ */
+export async function attachToCentrifugoPtyHandle(
+  sandbox: CentrifugoSandbox,
+  opts: CentrifugoPtyAttachOptions,
+): Promise<PtyHandle> {
+  return createOrAttachCentrifugoPtyHandle(sandbox, {
+    cols: opts.cols,
+    rows: opts.rows,
+    command: "",
+    existingSessionId: opts.sessionId,
+  });
+}
+
+async function createOrAttachCentrifugoPtyHandle(
+  sandbox: CentrifugoSandbox,
+  opts: Omit<CentrifugoPtyOptions, "command"> & {
+    command?: string;
+    existingSessionId?: string;
+  },
+): Promise<PtyHandle> {
+  const attaching = !!opts.existingSessionId;
+  const sessionId = opts.existingSessionId ?? crypto.randomUUID();
+  const statusRequestId = attaching ? crypto.randomUUID() : "";
   const userId = sandbox.getUserId();
   const connectionId = sandbox.getConnectionId();
   const channel = sandboxConnectionChannel(userId, connectionId);
@@ -169,6 +264,12 @@ export async function createCentrifugoPtyHandle(
   const listeners = new Set<(bytes: Uint8Array) => void>();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  // Attach mode: bytes that arrive before the first onData subscriber
+  // (status tail + live data racing the status answer) are queued here and
+  // replayed once, in order, so the re-attaching instance starts with the
+  // same output history instead of a gap.
+  const replayQueue: Uint8Array[] = [];
+  let replayDelivered = false;
 
   let pid = 0;
   let subscription: Subscription | undefined;
@@ -221,6 +322,8 @@ export async function createCentrifugoPtyHandle(
       return pid;
     },
 
+    sessionKey: sessionId,
+
     async sendInput(bytes: Uint8Array): Promise<void> {
       const payload: PtyInputPayload = {
         type: "pty_input",
@@ -269,6 +372,17 @@ export async function createCentrifugoPtyHandle(
 
     onData(cb: (bytes: Uint8Array) => void): () => void {
       listeners.add(cb);
+      if (attaching && !replayDelivered) {
+        replayDelivered = true;
+        for (const queued of replayQueue) {
+          try {
+            cb(queued);
+          } catch (err) {
+            console.error(`${LOG_PREFIX} listener threw:`, err);
+          }
+        }
+        replayQueue.length = 0;
+      }
       return () => {
         listeners.delete(cb);
       };
@@ -281,13 +395,29 @@ export async function createCentrifugoPtyHandle(
 
   // Wait for subscription + pty_ready before returning
   return new Promise<PtyHandle>((resolve, reject) => {
-    const TIMEOUT_MS = 15_000;
+    // Attach mode: the status query can be lost when the runner is
+    // mid-reconnect (Centrifugo history is disabled, so nothing replays
+    // it). Re-publish a few times before giving up: a lost query must
+    // not look like a dead session.
+    const STATUS_ATTEMPTS = 3;
+    const STATUS_RETRY_DELAY_MS = 5_000;
+    const TIMEOUT_MS = attaching
+      ? STATUS_ATTEMPTS * STATUS_RETRY_DELAY_MS + STATUS_RETRY_DELAY_MS
+      : 15_000;
+    const retryTimers: ReturnType<typeof setTimeout>[] = [];
+    const clearRetryTimers = () => {
+      for (const t of retryTimers) clearTimeout(t);
+      retryTimers.length = 0;
+    };
     const timeoutId = setTimeout(() => {
       if (!settled) {
         settled = true;
+        clearRetryTimers();
         cleanup();
         reject(
-          new Error(`${LOG_PREFIX} pty_create timed out after ${TIMEOUT_MS}ms`),
+          new Error(
+            `${LOG_PREFIX} ${attaching ? "pty_status" : "pty_create"} timed out after ${TIMEOUT_MS}ms`,
+          ),
         );
       }
     }, TIMEOUT_MS);
@@ -299,12 +429,36 @@ export async function createCentrifugoPtyHandle(
       if (!settled) {
         settled = true;
         clearTimeout(timeoutId);
+        clearRetryTimers();
         cleanup();
         reject(new Error(`${LOG_PREFIX} ${message}`));
       } else {
         console.error(`${LOG_PREFIX} transport failed after ready: ${message}`);
         resolveExitedOnce({ exitCode: null });
         cleanup();
+      }
+    };
+
+    const publishStatusQuery = (attempt: number) => {
+      if (settled) return;
+      const statusPayload: PtyStatusPayload = {
+        type: "pty_status",
+        sessionId,
+        requestId: statusRequestId,
+        targetConnectionId: connectionId,
+      };
+      subscription!.publish(statusPayload).catch((err: unknown) => {
+        failTransport(
+          `failed to publish pty_status: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+      if (attempt + 1 < STATUS_ATTEMPTS) {
+        retryTimers.push(
+          setTimeout(
+            () => publishStatusQuery(attempt + 1),
+            STATUS_RETRY_DELAY_MS,
+          ),
+        );
       }
     };
 
@@ -325,12 +479,19 @@ export async function createCentrifugoPtyHandle(
           if (!settled) {
             settled = true;
             clearTimeout(timeoutId);
+            clearRetryTimers();
             resolve(handle);
           }
           break;
 
         case "pty_data": {
           const bytes = encoder.encode(msg.data);
+          if (attaching && !replayDelivered) {
+            // Queue behind the status tail so the re-attaching instance
+            // sees output in order instead of live bytes before history.
+            replayQueue.push(bytes);
+            break;
+          }
           const snapshot = Array.from(listeners);
           for (const listener of snapshot) {
             try {
@@ -338,6 +499,41 @@ export async function createCentrifugoPtyHandle(
             } catch (err) {
               console.error(`${LOG_PREFIX} listener threw:`, err);
             }
+          }
+          break;
+        }
+
+        case "pty_status_result": {
+          if (!attaching || msg.requestId !== statusRequestId) break;
+          if (msg.status === "unknown") {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timeoutId);
+              clearRetryTimers();
+              cleanup();
+              reject(
+                new Error(
+                  `${LOG_PREFIX} session ${sessionId} is unknown to the sandbox runner`,
+                ),
+              );
+            }
+            break;
+          }
+          if (typeof msg.pid === "number") pid = msg.pid;
+          if (msg.outputTail) {
+            // Tail first: it is the history snapshot, and live bytes queued
+            // while the query was in flight come after it.
+            replayQueue.unshift(encoder.encode(msg.outputTail));
+          }
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeoutId);
+            clearRetryTimers();
+            resolve(handle);
+          }
+          if (msg.status === "exited") {
+            resolveExitedOnce({ exitCode: msg.exitCode ?? null });
+            cleanup();
           }
           break;
         }
@@ -351,6 +547,7 @@ export async function createCentrifugoPtyHandle(
           if (!settled) {
             settled = true;
             clearTimeout(timeoutId);
+            clearRetryTimers();
             cleanup();
             reject(new Error(`${LOG_PREFIX} pty_error: ${msg.message}`));
           } else {
@@ -369,11 +566,18 @@ export async function createCentrifugoPtyHandle(
     });
 
     subscription.on("subscribed", () => {
+      if (attaching) {
+        // Re-attach: ask the runner about the existing session instead of
+        // creating a second PTY for the same work. Retried: the query can
+        // be lost if the runner is mid-reconnect when it is sent.
+        publishStatusQuery(0);
+        return;
+      }
       // Now that we are subscribed, publish pty_create
       const createPayload: PtyCreatePayload = {
         type: "pty_create",
         sessionId,
-        command: opts.command,
+        command: opts.command ?? "",
         cols: opts.cols,
         rows: opts.rows,
         cwd: opts.cwd,
