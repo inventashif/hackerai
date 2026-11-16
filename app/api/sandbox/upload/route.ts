@@ -35,13 +35,17 @@ function isPathAllowed(p: string, roots: string[]): boolean {
 function corsHeaders(): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Methods": "PUT, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
   };
 }
 
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
+}
+
+export async function PUT(req: NextRequest) {
+  return POST(req);
 }
 
 export async function POST(req: NextRequest) {
