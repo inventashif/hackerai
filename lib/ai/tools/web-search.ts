@@ -13,6 +13,12 @@ import {
 } from "./utils/perplexity";
 import { reportToolFailure } from "./tool-failure";
 import {
+  TavilyApiError,
+  TAVILY_SEARCH_MAX_ATTEMPTS,
+  isTavilyConfigured,
+  searchTavily,
+} from "./utils/tavily";
+import {
   PERPLEXITY_QUERY_MAX_LENGTH,
   createWebSearchToolSchema,
   webSearchTool,
@@ -32,6 +38,18 @@ const WEB_SEARCH_RETRY_JITTER_MS = 75;
 const EMPTY_QUERY_TOOL_ERROR =
   "Error performing web search: Provide at least one non-empty query.";
 const QUERY_TOO_LONG_TOOL_ERROR = `Error performing web search: Each query must be ${PERPLEXITY_QUERY_MAX_LENGTH} characters or fewer.`;
+const NO_SEARCH_RESULTS_TOOL_ERROR =
+  "No web search results were found for those queries. Try different keywords or a broader query.";
+const NO_PROVIDER_TOOL_ERROR =
+  "Error performing web search: no search provider is configured. Set TAVILY_API_KEY or PERPLEXITY_API_KEY.";
+
+/** Tavily's `days` window equivalent of the Perplexity recency filter. */
+const TAVILY_RECENCY_DAYS: Record<string, number> = {
+  day: 1,
+  week: 7,
+  month: 30,
+  year: 365,
+};
 
 const sleep = (delayMs: number, signal?: AbortSignal): Promise<void> => {
   if (delayMs <= 0) return Promise.resolve();
@@ -94,6 +112,20 @@ const formatPerplexityFailureForTool = (
   }
 
   return `Error performing web search: Perplexity search failed (HTTP ${error.status}${statusText}).`;
+};
+
+const formatTavilyFailureForTool = (error: TavilyApiError): string => {
+  const statusText = error.statusText ? ` ${error.statusText}` : "";
+
+  if (error.status === 401 || error.status === 403) {
+    return `Error performing web search: Tavily search is not authorized (HTTP ${error.status}${statusText}). Check the TAVILY_API_KEY value or account access.`;
+  }
+
+  if (error.retryable) {
+    return `Error performing web search: Tavily search is temporarily unavailable (HTTP ${error.status}${statusText}). Please retry shortly or continue without live web results if the task can proceed.`;
+  }
+
+  return `Error performing web search: Tavily search failed (HTTP ${error.status}${statusText}).`;
 };
 
 const fetchPerplexitySearch = async (
@@ -200,11 +232,79 @@ export const createWebSearch = (context: ToolContext) => {
           return error;
         }
 
+        const recency = time && time !== "all" ? RECENCY_MAP[time] : undefined;
+
+        // Provider chain: Perplexity when its key is present, otherwise the
+        // free-tier Tavily adapter. web_search is registered unconditionally,
+        // so a missing provider must degrade to a clear message, not a crash.
+        if (!process.env.PERPLEXITY_API_KEY?.trim()) {
+          if (!isTavilyConfigured()) {
+            return NO_PROVIDER_TOOL_ERROR;
+          }
+
+          try {
+            const results = await searchTavily(
+              queries,
+              {
+                recencyDays: recency ? TAVILY_RECENCY_DAYS[recency] : undefined,
+              },
+              abortSignal,
+            );
+
+            return results.length > 0
+              ? formatSearchResults(results)
+              : NO_SEARCH_RESULTS_TOOL_ERROR;
+          } catch (tavilyError) {
+            if (
+              tavilyError instanceof Error &&
+              tavilyError.name === "AbortError"
+            ) {
+              return "Error: Operation aborted";
+            }
+
+            if (tavilyError instanceof TavilyApiError) {
+              reportToolFailure(context.onToolFailure, {
+                event: "web_search_provider_failed",
+                tool_name: "web_search",
+                provider: "tavily",
+                status: tavilyError.status,
+                status_text: tavilyError.statusText,
+                retryable: tavilyError.retryable,
+                attempts: TAVILY_SEARCH_MAX_ATTEMPTS,
+                error_name: tavilyError.name,
+                body_summary: tavilyError.bodySummary,
+              });
+              console.error("Web search tool error:", {
+                provider: "tavily",
+                status: tavilyError.status,
+                statusText: tavilyError.statusText,
+                retryable: tavilyError.retryable,
+                bodySummary: tavilyError.bodySummary,
+              });
+              return formatTavilyFailureForTool(tavilyError);
+            }
+
+            const errorMessage = stringifyRedactedError(tavilyError);
+            reportToolFailure(context.onToolFailure, {
+              event: "web_search_tool_failed",
+              tool_name: "web_search",
+              provider: "tavily",
+              error_name:
+                tavilyError instanceof Error
+                  ? tavilyError.name
+                  : "UnknownError",
+              error_message: errorMessage,
+            });
+            console.error("Web search tool error:", errorMessage);
+            return `Error performing web search: ${errorMessage}`;
+          }
+        }
+
         const searchBody = buildPerplexitySearchBody(
           queries.length === 1 ? queries[0] : queries,
           {
             country: userLocation?.country,
-            recency: time && time !== "all" ? RECENCY_MAP[time] : undefined,
+            recency,
           },
         );
 

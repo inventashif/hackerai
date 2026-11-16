@@ -597,7 +597,6 @@ export const createOpenUrlToolSchema = ({
     inputSchema: createOpenUrlToolInputSchema({ modelName }),
   });
 
-
 export const openUrlTool = createOpenUrlToolSchema();
 
 export type OpenUrlToolInput = z.infer<typeof openUrlToolInputSchema>;
@@ -890,8 +889,7 @@ export const memoryToolInputSchema = z.object({
   relation: z
     .enum(MEMORY_RELATIONS)
     .optional()
-    .describe("For `link`, the relationship type")
-    ,
+    .describe("For `link`, the relationship type"),
   note: z
     .string()
     .optional()
@@ -951,12 +949,10 @@ export type AgentToolSchemaMode = "agent" | "ask";
 export const createAgentToolSchemaSet = ({
   mode = "agent",
   notesEnabled = true,
-  hasPerplexityApiKey = false,
   hasJinaApiKey = false,
 }: {
   mode?: AgentToolSchemaMode;
   notesEnabled?: boolean;
-  hasPerplexityApiKey?: boolean;
   hasJinaApiKey?: boolean;
 } = {}) => {
   const notes = notesEnabled
@@ -970,7 +966,8 @@ export const createAgentToolSchemaSet = ({
       }
     : {};
   const networkTools = {
-    ...(hasPerplexityApiKey ? { web_search: webSearchTool } : {}),
+    // web_search is always present; its provider chain degrades gracefully.
+    web_search: webSearchTool,
     ...(hasJinaApiKey ? { open_url: openUrlTool } : {}),
   };
 

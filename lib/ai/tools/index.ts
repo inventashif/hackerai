@@ -185,9 +185,9 @@ export const createTools = (
         delete_note: createDeleteNote(context),
         memory: createMemory(context),
       }),
-      ...(process.env.PERPLEXITY_API_KEY && {
-        web_search: createWebSearch(context),
-      }),
+      // web_search is always available: Perplexity when keyed, Tavily free
+      // tier otherwise (see provider chain in tools/web-search.ts).
+      web_search: createWebSearch(context),
       ...(process.env.JINA_API_KEY && {
         open_url: createOpenUrlTool(context),
       }),
@@ -213,9 +213,8 @@ export const createTools = (
             // most where there is no sandbox to re-derive it from.
             memory: allTools.memory,
           }),
-          ...(process.env.PERPLEXITY_API_KEY && {
-            web_search: createWebSearch(context),
-          }),
+          // Always available; provider chain handles the keyless case.
+          web_search: createWebSearch(context),
           ...(process.env.JINA_API_KEY && {
             open_url: createOpenUrlTool(context),
           }),
