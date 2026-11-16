@@ -5,8 +5,8 @@ import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 
 /**
- * Base directory for local file storage. Defaults to /upload (VM sandbox).
- * Overridable via LOCAL_STORAGE_DIR environment variable.
+ * Base directory for local file storage on the VM sandbox.
+ * Defaults to /upload. Overridable via LOCAL_STORAGE_DIR.
  */
 function getLocalStorageDir(): string {
   if (process.env.LOCAL_STORAGE_DIR) {
@@ -17,11 +17,11 @@ function getLocalStorageDir(): string {
 }
 
 /**
- * Base URL used by local-storage upload/download endpoints.
- * In production (self-hosted on VM), this should point to the app's own URL.
+ * Base URL of the deployed app (Vercel production URL).
+ * Used to construct sandbox proxy URLs.
  */
-function getLocalStorageBaseUrl(): string {
-  return process.env.LOCAL_STORAGE_BASE_URL || "http://localhost:3000";
+function getAppBaseUrl(): string {
+  return process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 }
 
 /**
@@ -36,7 +36,8 @@ export function isLocalStorageKey(s3Key: string): boolean {
 }
 
 /**
- * Resolve an s3Key to a safe absolute path under the local storage dir.
+ * Resolve an s3Key to a safe absolute path under the VM's /upload directory.
+ * This path is used by the sandbox VM when reading/writing files.
  */
 export function localStorageFilePath(s3Key: string): string {
   if (!isLocalStorageKey(s3Key)) {
@@ -64,8 +65,9 @@ export function generateS3Key(userId: string, fileName: string): string {
 const S3_USER_FILES_PREFIX = "users";
 
 /**
- * Generate upload URL for a file. Always uses local storage endpoint.
- * The client PUTs directly to this URL.
+ * Generate sandbox upload URL for a file.
+ * The client PUTs to /api/sandbox/upload?path=/upload/<s3Key>
+ * which proxies to the VM sandbox.
  */
 export async function generateS3UploadUrl(
   fileName: string,
@@ -74,20 +76,23 @@ export async function generateS3UploadUrl(
   contentLength?: number,
 ): Promise<{ uploadUrl: string; s3Key: string }> {
   const s3Key = generateS3Key(userId, fileName);
-
-  const uploadUrl = `${getLocalStorageBaseUrl()}/api/local-storage/upload?key=${encodeURIComponent(s3Key)}`;
+  const sandboxPath = `/upload/${s3Key}`;
+  const uploadUrl = `${getAppBaseUrl()}/api/sandbox/upload?path=${encodeURIComponent(sandboxPath)}`;
   return { uploadUrl, s3Key };
 }
 
 /**
- * Generate download URL for a file. Always uses local storage endpoint.
+ * Generate sandbox download URL for a file.
+ * The client GETs /api/sandbox/file?path=/upload/<s3Key>
+ * which proxies to the VM sandbox.
  */
 export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
-  return `${getLocalStorageBaseUrl()}/api/local-storage/file?key=${encodeURIComponent(s3Key)}`;
+  const sandboxPath = `/upload/${s3Key}`;
+  return `${getAppBaseUrl()}/api/sandbox/file?path=${encodeURIComponent(sandboxPath)}`;
 }
 
 /**
- * Delete object from local storage.
+ * Delete object from VM sandbox storage.
  */
 export async function deleteS3Object(s3Key: string): Promise<void> {
   if (!isLocalStorageKey(s3Key)) {
@@ -97,7 +102,7 @@ export async function deleteS3Object(s3Key: string): Promise<void> {
 }
 
 /**
- * Get object size in bytes from local storage.
+ * Get object size in bytes from VM sandbox storage.
  */
 export async function getS3ObjectSizeBytes(s3Key: string): Promise<number> {
   const stat = await fs.stat(
@@ -107,7 +112,7 @@ export async function getS3ObjectSizeBytes(s3Key: string): Promise<number> {
 }
 
 /**
- * Compatibility stubs - always return false since we only use local storage.
+ * Compatibility stubs - always return false since we only use sandbox storage.
  */
 export function isS3Configured(): boolean {
   return false;
@@ -123,4 +128,4 @@ export { S3_USER_FILES_PREFIX as S3_USER_FILES_PREFIX_CONST };
 import { getS3UrlLifetimeSeconds } from "../lib/constants/s3";
 export { getS3UrlLifetimeSeconds };
 
-export { getLocalStorageDir, getLocalStorageBaseUrl };
+export { getLocalStorageDir, getAppBaseUrl };

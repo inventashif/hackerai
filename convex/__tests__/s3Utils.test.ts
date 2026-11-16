@@ -5,11 +5,11 @@ import path from "node:path";
 // Mock the local storage directory for tests
 const TEST_STORAGE_DIR = "/tmp/hackerai-test-storage";
 
-describe("s3Utils (local storage only)", () => {
+describe("s3Utils (sandbox storage)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.LOCAL_STORAGE_DIR = TEST_STORAGE_DIR;
-    process.env.LOCAL_STORAGE_BASE_URL = "http://localhost:3000";
+    process.env.NEXT_PUBLIC_APP_URL = "http://localhost:3000";
   });
 
   afterEach(async () => {
@@ -84,7 +84,7 @@ describe("s3Utils (local storage only)", () => {
   });
 
   describe("generateS3UploadUrl", () => {
-    it("should generate local storage upload URL and S3 key", async () => {
+    it("should generate sandbox upload URL and S3 key", async () => {
       const { generateS3UploadUrl } = await import("../s3Utils");
 
       const result = await generateS3UploadUrl(
@@ -96,18 +96,20 @@ describe("s3Utils (local storage only)", () => {
 
       expect(result).toHaveProperty("uploadUrl");
       expect(result).toHaveProperty("s3Key");
-      expect(result.uploadUrl).toContain("/api/local-storage/upload?key=");
+      expect(result.uploadUrl).toContain("/api/sandbox/upload?path=");
+      expect(result.uploadUrl).toContain("%2Fupload%2Fusers%2Fuser123%2F");
       expect(result.s3Key).toMatch(/^users\/user123\/\d+-testuuid\d+\.pdf$/);
     });
   });
 
   describe("generateS3DownloadUrl", () => {
-    it("should generate local storage download URL", async () => {
+    it("should generate sandbox download URL", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
 
       const url = await generateS3DownloadUrl("users/user123/1234567890-abcdef123456.pdf");
 
-      expect(url).toContain("/api/local-storage/file?key=");
+      expect(url).toContain("/api/sandbox/file?path=");
+      expect(url).toContain("%2Fupload%2Fusers%2Fuser123%2F");
     });
   });
 
