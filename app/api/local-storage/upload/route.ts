@@ -8,8 +8,7 @@ const LOCAL_STORAGE_KEY_PATTERN =
 
 function storageDir(): string {
   return path.resolve(
-    /* turbopackIgnore: true */ process.env.LOCAL_STORAGE_DIR ||
-      ".local-storage",
+    /* turbopackIgnore: true */ process.env.LOCAL_STORAGE_DIR || "/upload",
   );
 }
 

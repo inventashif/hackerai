@@ -1,17 +1,24 @@
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import type { S3Client } from "@aws-sdk/client-s3";
+import { describe, it, expect, jest, beforeEach, afterEach } from "@jest/globals";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 
-// Mock AWS SDK modules
-jest.mock("@aws-sdk/client-s3");
-jest.mock("@aws-sdk/s3-request-presigner");
+// Mock the local storage directory for tests
+const TEST_STORAGE_DIR = "/tmp/hackerai-test-storage";
 
-describe("s3Utils", () => {
+describe("s3Utils (local storage only)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.AWS_S3_ACCESS_KEY_ID = "test-access-key";
-    process.env.AWS_S3_SECRET_ACCESS_KEY = "test-secret-key";
-    process.env.AWS_S3_REGION = "us-east-1";
-    process.env.AWS_S3_BUCKET_NAME = "test-bucket";
+    process.env.LOCAL_STORAGE_DIR = TEST_STORAGE_DIR;
+    process.env.LOCAL_STORAGE_BASE_URL = "http://localhost:3000";
+  });
+
+  afterEach(async () => {
+    // Clean up test storage directory
+    try {
+      await fs.rm(TEST_STORAGE_DIR, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
   });
 
   describe("generateS3Key", () => {
@@ -22,9 +29,7 @@ describe("s3Utils", () => {
 
       const s3Key = generateS3Key(userId, fileName);
 
-      // Format: users/{userId}/{timestamp}-{uuid}.{ext}
-      // UUID is mocked as "test-uuid-{counter}" in tests
-      expect(s3Key).toMatch(/^users\/user123\/\d+-test-uuid-\d+\.pdf$/);
+      expect(s3Key).toMatch(/^users\/user123\/\d+-testuuid\d+\.pdf$/);
     });
 
     it("should generate unique keys for same user and filename", async () => {
@@ -37,48 +42,49 @@ describe("s3Utils", () => {
 
       expect(key1).not.toBe(key2);
     });
+
+    it("should sanitize userId", async () => {
+      const { generateS3Key } = await import("../s3Utils");
+      const userId = "user@domain.com";
+      const fileName = "test.pdf";
+
+      const s3Key = generateS3Key(userId, fileName);
+
+      expect(s3Key).toMatch(/^users\/user_domain\.com\//);
+    });
   });
 
-  describe("getS3Client", () => {
-    it("should create S3 client with correct credentials", async () => {
-      const { S3Client } = await import("@aws-sdk/client-s3");
-      const { getS3Client } = await import("../s3Utils");
-
-      getS3Client();
-
-      expect(S3Client).toHaveBeenCalledWith(
-        expect.objectContaining({
-          region: "us-east-1",
-          credentials: expect.objectContaining({
-            accessKeyId: "test-access-key",
-            secretAccessKey: "test-secret-key",
-          }),
-        }),
-      );
+  describe("isLocalStorageKey", () => {
+    it("should validate correct keys", async () => {
+      const { isLocalStorageKey } = await import("../s3Utils");
+      expect(isLocalStorageKey("users/user123/1234567890-abcdef123456.pdf")).toBe(true);
+      expect(isLocalStorageKey("users/user_123/1234567890-abcdef123456.txt")).toBe(true);
     });
 
-    it("should throw error if credentials are missing", async () => {
-      delete process.env.AWS_S3_ACCESS_KEY_ID;
-      delete process.env.AWS_S3_SECRET_ACCESS_KEY;
-      delete process.env.AWS_S3_REGION;
-      delete process.env.AWS_S3_BUCKET_NAME;
+    it("should reject invalid keys", async () => {
+      const { isLocalStorageKey } = await import("../s3Utils");
+      expect(isLocalStorageKey("")).toBe(false);
+      expect(isLocalStorageKey("../etc/passwd")).toBe(false);
+      expect(isLocalStorageKey("users/user123/../../etc/passwd")).toBe(false);
+      expect(isLocalStorageKey("invalid/key/format")).toBe(false);
+    });
+  });
 
-      // Force re-import to get new instance with missing env vars
-      jest.resetModules();
-      const { getS3Client } = await import("../s3Utils");
+  describe("localStorageFilePath", () => {
+    it("should resolve valid keys to absolute paths", async () => {
+      const { localStorageFilePath } = await import("../s3Utils");
+      const filePath = localStorageFilePath("users/user123/1234567890-abcdef123456.pdf");
+      expect(filePath).toBe(path.join(TEST_STORAGE_DIR, "users/user123/1234567890-abcdef123456.pdf"));
+    });
 
-      expect(() => getS3Client()).toThrow();
+    it("should throw for invalid keys", async () => {
+      const { localStorageFilePath } = await import("../s3Utils");
+      expect(() => localStorageFilePath("invalid")).toThrow("Invalid storage key");
     });
   });
 
   describe("generateS3UploadUrl", () => {
-    it("should generate presigned upload URL and S3 key", async () => {
-      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
-      const mockGetSignedUrl = getSignedUrl as jest.MockedFunction<
-        typeof getSignedUrl
-      >;
-      mockGetSignedUrl.mockResolvedValue("https://s3.amazonaws.com/signed-url");
-
+    it("should generate local storage upload URL and S3 key", async () => {
       const { generateS3UploadUrl } = await import("../s3Utils");
 
       const result = await generateS3UploadUrl(
@@ -90,102 +96,78 @@ describe("s3Utils", () => {
 
       expect(result).toHaveProperty("uploadUrl");
       expect(result).toHaveProperty("s3Key");
-      expect(result.uploadUrl).toBe("https://s3.amazonaws.com/signed-url");
-      // Format: users/{userId}/{timestamp}-{uuid}.{ext}
-      // UUID is mocked as "test-uuid-{counter}" in tests
-      expect(result.s3Key).toMatch(/^users\/user123\/\d+-test-uuid-\d+\.pdf$/);
-      expect(mockGetSignedUrl).toHaveBeenCalled();
-    });
-
-    it("should bind expected content length into the PutObject command", async () => {
-      const { PutObjectCommand } = await import("@aws-sdk/client-s3");
-      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
-      const mockGetSignedUrl = getSignedUrl as jest.MockedFunction<
-        typeof getSignedUrl
-      >;
-      mockGetSignedUrl.mockResolvedValue("https://s3.amazonaws.com/signed-url");
-
-      const { generateS3UploadUrl } = await import("../s3Utils");
-
-      await generateS3UploadUrl("test.pdf", "application/pdf", "user123", 1024);
-
-      expect(PutObjectCommand).toHaveBeenCalledWith(
-        expect.objectContaining({
-          ContentLength: 1024,
-        }),
-      );
-    });
-
-    it("should use correct expiration time", async () => {
-      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
-      const mockGetSignedUrl = getSignedUrl as jest.MockedFunction<
-        typeof getSignedUrl
-      >;
-      mockGetSignedUrl.mockResolvedValue("https://s3.amazonaws.com/signed-url");
-
-      const { generateS3UploadUrl } = await import("../s3Utils");
-
-      await generateS3UploadUrl("test.pdf", "application/pdf", "user123", 1024);
-
-      const callArgs = mockGetSignedUrl.mock.calls[0];
-      expect(callArgs[2]).toEqual(expect.objectContaining({ expiresIn: 3600 }));
+      expect(result.uploadUrl).toContain("/api/local-storage/upload?key=");
+      expect(result.s3Key).toMatch(/^users\/user123\/\d+-testuuid\d+\.pdf$/);
     });
   });
 
   describe("generateS3DownloadUrl", () => {
-    it("should generate presigned download URL", async () => {
-      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
-      const mockGetSignedUrl = getSignedUrl as jest.MockedFunction<
-        typeof getSignedUrl
-      >;
-      mockGetSignedUrl.mockResolvedValue(
-        "https://s3.amazonaws.com/download-url",
-      );
-
+    it("should generate local storage download URL", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
 
-      const url = await generateS3DownloadUrl(
-        "users/user123/123-uuid-test.pdf",
-      );
+      const url = await generateS3DownloadUrl("users/user123/1234567890-abcdef123456.pdf");
 
-      expect(url).toBe("https://s3.amazonaws.com/download-url");
-      expect(mockGetSignedUrl).toHaveBeenCalled();
+      expect(url).toContain("/api/local-storage/file?key=");
     });
   });
 
   describe("deleteS3Object", () => {
-    it("should delete S3 object", async () => {
-      const { S3Client } = await import("@aws-sdk/client-s3");
-      const mockSend = jest.fn().mockResolvedValue({});
-      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
-        () =>
-          ({
-            send: mockSend,
-          }) as unknown as S3Client,
-      );
+    it("should delete local storage file", async () => {
+      const { deleteS3Object, localStorageFilePath } = await import("../s3Utils");
+      const filePath = localStorageFilePath("users/user123/1234567890-abcdef123456.pdf");
+      
+      // Create the file first
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, "test content");
 
-      const { deleteS3Object } = await import("../s3Utils");
+      await deleteS3Object("users/user123/1234567890-abcdef123456.pdf");
 
-      await deleteS3Object("users/user123/123-uuid-test.pdf");
-
-      expect(mockSend).toHaveBeenCalled();
+      const exists = await fs.stat(filePath).then(() => true).catch(() => false);
+      expect(exists).toBe(false);
     });
 
-    it("should handle deletion errors gracefully", async () => {
-      const { S3Client } = await import("@aws-sdk/client-s3");
-      const mockSend = jest.fn().mockRejectedValue(new Error("Delete failed"));
-      (S3Client as jest.MockedClass<typeof S3Client>).mockImplementation(
-        () =>
-          ({
-            send: mockSend,
-          }) as unknown as S3Client,
-      );
-
+    it("should not throw for non-existent files", async () => {
       const { deleteS3Object } = await import("../s3Utils");
-
       await expect(
-        deleteS3Object("users/user123/123-uuid-test.pdf"),
-      ).rejects.toThrow("Delete failed");
+        deleteS3Object("users/user123/1234567890-abcdef123456.pdf"),
+      ).resolves.not.toThrow();
+    });
+
+    it("should not delete for invalid keys", async () => {
+      const { deleteS3Object } = await import("../s3Utils");
+      await expect(deleteS3Object("invalid")).resolves.not.toThrow();
+    });
+  });
+
+  describe("getS3ObjectSizeBytes", () => {
+    it("should return file size for existing files", async () => {
+      const { getS3ObjectSizeBytes, localStorageFilePath } = await import("../s3Utils");
+      const filePath = localStorageFilePath("users/user123/1234567890-abcdef123456.pdf");
+      
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, "hello world"); // 11 bytes
+
+      const size = await getS3ObjectSizeBytes("users/user123/1234567890-abcdef123456.pdf");
+      expect(size).toBe(11);
+    });
+
+    it("should throw for non-existent files", async () => {
+      const { getS3ObjectSizeBytes } = await import("../s3Utils");
+      await expect(
+        getS3ObjectSizeBytes("users/user123/1234567890-abcdef123456.pdf"),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe("isS3Configured / isAzureStorageConfigured", () => {
+    it("should always return false for S3", async () => {
+      const { isS3Configured } = await import("../s3Utils");
+      expect(isS3Configured()).toBe(false);
+    });
+
+    it("should always return false for Azure", async () => {
+      const { isAzureStorageConfigured } = await import("../s3Utils");
+      expect(isAzureStorageConfigured()).toBe(false);
     });
   });
 });

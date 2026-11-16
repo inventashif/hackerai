@@ -31,7 +31,6 @@ import {
   writeGeneratedTextAttachment,
 } from "./useTauri";
 import { PASTED_TEXT_ATTACHMENT_MIN_CHARS } from "@/lib/utils/pasted-text-attachments";
-import { isAzureSasUrl } from "@/lib/utils/storage-url";
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
@@ -378,12 +377,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         const uploadResponse = await fetch(uploadUrl, {
           method: "PUT",
           body: file,
-          headers: {
-            "Content-Type": file.type || "application/octet-stream",
-            ...(isAzureSasUrl(uploadUrl)
-              ? { "x-ms-blob-type": "BlockBlob" }
-              : {}),
-          },
+          headers: { "Content-Type": file.type || "application/octet-stream" },
         });
 
         if (!uploadResponse.ok) {

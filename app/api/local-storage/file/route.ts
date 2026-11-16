@@ -56,8 +56,7 @@ const EXTENSION_CONTENT_TYPES: Record<string, string> = {
 
 function storageDir(): string {
   return path.resolve(
-    /* turbopackIgnore: true */ process.env.LOCAL_STORAGE_DIR ||
-      ".local-storage",
+    /* turbopackIgnore: true */ process.env.LOCAL_STORAGE_DIR || "/upload",
   );
 }
 
