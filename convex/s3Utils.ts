@@ -8,6 +8,13 @@ import {
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import {
+  BlobSASPermissions,
+  BlobServiceClient,
+  SASProtocol,
+  StorageSharedKeyCredential,
+  generateBlobSASQueryParameters,
+} from "@azure/storage-blob";
 import { v4 as uuidv4 } from "uuid";
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
@@ -55,10 +62,96 @@ export function getS3Client(): S3Client {
 export function isS3Configured(): boolean {
   return Boolean(
     process.env.AWS_S3_ACCESS_KEY_ID &&
-      process.env.AWS_S3_SECRET_ACCESS_KEY &&
-      process.env.AWS_S3_REGION &&
-      process.env.AWS_S3_BUCKET_NAME,
+    process.env.AWS_S3_SECRET_ACCESS_KEY &&
+    process.env.AWS_S3_REGION &&
+    process.env.AWS_S3_BUCKET_NAME,
   );
+}
+
+/**
+ * Azure Blob Storage support.
+ *
+ * Azure has no S3 API, so it gets a first-class adapter instead of the
+ * presigned-S3 path. Selected when AZURE_STORAGE_CONNECTION_STRING and
+ * AZURE_STORAGE_CONTAINER are both present; otherwise S3, then local disk.
+ */
+export function isAzureStorageConfigured(): boolean {
+  return Boolean(
+    process.env.AZURE_STORAGE_CONNECTION_STRING?.trim() &&
+    process.env.AZURE_STORAGE_CONTAINER?.trim(),
+  );
+}
+
+function getAzureConnectionString(): string {
+  return getRequiredEnvVar("AZURE_STORAGE_CONNECTION_STRING");
+}
+
+function getAzureContainerName(): string {
+  return getRequiredEnvVar("AZURE_STORAGE_CONTAINER");
+}
+
+function parseAzureAccount(connectionString: string): {
+  accountName: string;
+  accountKey: string;
+} {
+  const parts = new Map<string, string>();
+  for (const segment of connectionString.split(";")) {
+    const separator = segment.indexOf("=");
+    if (separator <= 0) continue;
+    parts.set(
+      segment.slice(0, separator).trim().toLowerCase(),
+      segment.slice(separator + 1).trim(),
+    );
+  }
+
+  const accountName = parts.get("accountname");
+  const accountKey = parts.get("accountkey");
+  if (!accountName || !accountKey) {
+    throw new Error(
+      "AZURE_STORAGE_CONNECTION_STRING must contain AccountName and AccountKey",
+    );
+  }
+  return { accountName, accountKey };
+}
+
+function getAzureServiceClient(): BlobServiceClient {
+  return BlobServiceClient.fromConnectionString(getAzureConnectionString());
+}
+
+function getAzureBlobClient(s3Key: string) {
+  return getAzureServiceClient()
+    .getContainerClient(getAzureContainerName())
+    .getBlockBlobClient(s3Key);
+}
+
+/**
+ * Mint a short-lived SAS URL for a blob. `permissions: "cw"` for uploads
+ * (create + write), `"r"` for downloads.
+ */
+function createAzureSasUrl(s3Key: string, permissions: string): string {
+  const { accountName, accountKey } = parseAzureAccount(
+    getAzureConnectionString(),
+  );
+  const credential = new StorageSharedKeyCredential(accountName, accountKey);
+  const expiresOn = new Date(Date.now() + getS3UrlLifetimeSeconds() * 1000);
+  const blobUrl = getAzureBlobClient(s3Key).url;
+  // Match the SAS protocol to the endpoint so Azurite (http) also works.
+  const protocol = blobUrl.startsWith("https:")
+    ? SASProtocol.Https
+    : SASProtocol.HttpsAndHttp;
+
+  const sas = generateBlobSASQueryParameters(
+    {
+      containerName: getAzureContainerName(),
+      blobName: s3Key,
+      permissions: BlobSASPermissions.parse(permissions),
+      expiresOn,
+      protocol,
+    },
+    credential,
+  ).toString();
+
+  return `${blobUrl}?${sas}`;
 }
 
 /**
@@ -108,10 +201,7 @@ export function localStorageFilePath(s3Key: string): string {
   if (!isLocalStorageKey(s3Key)) {
     throw new Error(`Invalid storage key: ${s3Key}`);
   }
-  return path.join(
-    /* turbopackIgnore: true */ getLocalStorageDir(),
-    s3Key,
-  );
+  return path.join(/* turbopackIgnore: true */ getLocalStorageDir(), s3Key);
 }
 
 /**
@@ -141,6 +231,20 @@ export async function generateS3UploadUrl(
   contentLength?: number,
 ): Promise<{ uploadUrl: string; s3Key: string }> {
   const s3Key = generateS3Key(userId, fileName);
+
+  // Azure Blob Storage takes precedence when configured; it has no S3 API.
+  // The client PUT must also send `x-ms-blob-type: BlockBlob`.
+  if (isAzureStorageConfigured()) {
+    try {
+      return { uploadUrl: createAzureSasUrl(s3Key, "cw"), s3Key };
+    } catch (error) {
+      console.error("Failed to generate Azure upload URL:", error);
+      throw new Error(
+        "Failed to generate upload URL: " +
+          (error instanceof Error ? error.message : "Unknown error"),
+      );
+    }
+  }
 
   if (!isS3Configured()) {
     const uploadUrl = `${getLocalStorageBaseUrl()}/api/local-storage/upload?key=${encodeURIComponent(s3Key)}`;
@@ -177,6 +281,18 @@ export async function generateS3UploadUrl(
  * configured, otherwise returns a local-storage endpoint URL.
  */
 export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
+  if (isAzureStorageConfigured()) {
+    try {
+      return createAzureSasUrl(s3Key, "r");
+    } catch (error) {
+      console.error("Failed to generate Azure download URL:", error);
+      throw new Error(
+        "Failed to generate download URL: " +
+          (error instanceof Error ? error.message : "Unknown error"),
+      );
+    }
+  }
+
   if (!isS3Configured()) {
     return `${getLocalStorageBaseUrl()}/api/local-storage/file?key=${encodeURIComponent(s3Key)}`;
   }
@@ -208,6 +324,19 @@ export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
  * Delete object from storage (S3 or local fallback).
  */
 export async function deleteS3Object(s3Key: string): Promise<void> {
+  if (isAzureStorageConfigured()) {
+    try {
+      await getAzureBlobClient(s3Key).deleteIfExists();
+      return;
+    } catch (error) {
+      console.error("Failed to delete Azure blob:", error);
+      throw new Error(
+        "Failed to delete S3 object: " +
+          (error instanceof Error ? error.message : "Unknown error"),
+      );
+    }
+  }
+
   if (!isS3Configured()) {
     if (!isLocalStorageKey(s3Key)) {
       return;
@@ -239,6 +368,22 @@ export async function deleteS3Object(s3Key: string): Promise<void> {
  * Get object size in bytes (S3 or local fallback).
  */
 export async function getS3ObjectSizeBytes(s3Key: string): Promise<number> {
+  if (isAzureStorageConfigured()) {
+    try {
+      const properties = await getAzureBlobClient(s3Key).getProperties();
+      if (typeof properties.contentLength !== "number") {
+        throw new Error("Azure blob contentLength is missing");
+      }
+      return properties.contentLength;
+    } catch (error) {
+      console.error("Failed to fetch Azure blob metadata:", error);
+      throw new Error(
+        "Failed to fetch S3 object metadata: " +
+          (error instanceof Error ? error.message : "Unknown error"),
+      );
+    }
+  }
+
   if (!isS3Configured()) {
     const stat = await fs.stat(
       /* turbopackIgnore: true */ localStorageFilePath(s3Key),

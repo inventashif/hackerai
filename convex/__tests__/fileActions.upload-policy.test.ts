@@ -148,7 +148,7 @@ describe("fileActions saveFile upload policy", () => {
         if (s3Key.includes("large.bin")) return 21 * 1024 * 1024;
         if (s3Key.includes("large.png")) return 8 * 1024 * 1024;
         if (s3Key.includes("archive.zip")) return 25 * 1024 * 1024;
-        if (s3Key.includes("huge.bin")) return 251 * 1024 * 1024;
+        if (s3Key.includes("huge.bin")) return 501 * 1024 * 1024;
         return 1024;
       },
     );
@@ -434,7 +434,7 @@ describe("fileActions saveFile upload policy", () => {
         s3Key: "users/user123/huge.bin",
         name: "huge.bin",
         mediaType: "application/octet-stream",
-        size: 251 * 1024 * 1024,
+        size: 501 * 1024 * 1024,
         mode: "agent",
       }),
     ).rejects.toMatchObject({

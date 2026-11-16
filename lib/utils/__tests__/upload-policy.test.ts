@@ -47,4 +47,24 @@ describe("upload policy messages", () => {
       message: "File size must be less than 500MB.",
     });
   });
+
+  it("accepts Agent uploads up to and including 500MB", () => {
+    expect(
+      validateUploadPolicy({
+        mode: "agent",
+        size: 500 * 1024 * 1024,
+        mediaType: "application/zip",
+        surface: "client",
+      }),
+    ).toEqual({ valid: true });
+
+    expect(
+      validateUploadPolicy({
+        mode: "agent",
+        size: 500 * 1024 * 1024,
+        mediaType: "application/zip",
+        surface: "backend",
+      }),
+    ).toEqual({ valid: true });
+  });
 });
