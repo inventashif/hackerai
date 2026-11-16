@@ -3,6 +3,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { isPersonalMode } from "@/lib/auth/personal-mode";
+import { api } from "@/convex/_generated/api";
+import { ConvexHttpClient } from "convex/browser";
 
 const MAX_SANDBOX_FILE_SIZE = 500 * 1024 * 1024; // 500 MB max for sandbox uploads
 
@@ -198,6 +200,11 @@ async function proxyUploadToVMSandbox(req: NextRequest, targetPath: string) {
 }
 
 async function getActiveSandboxConnectionId(userId: string): Promise<string | null> {
-  // TODO: Query Convex for the user's active sandbox connection ID
-  return null;
+  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+  if (!convexUrl) {
+    return null;
+  }
+  const convex = new ConvexHttpClient(convexUrl);
+  const connectionId = await convex.query(api.localSandbox.getActiveSandboxConnectionId, { userId });
+  return connectionId;
 }

@@ -700,6 +700,22 @@ export const listConnections = query({
   },
 });
 
+export const getActiveSandboxConnectionId = query({
+  args: { userId: v.string() },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_user_and_status", (q) =>
+        q.eq("user_id", args.userId).eq("status", "connected"),
+      )
+      .order("desc")
+      .first();
+
+    return connection?.connection_id ?? null;
+  },
+});
+
 export const listConnectionsForBackend = query({
   args: {
     serviceKey: v.string(),
