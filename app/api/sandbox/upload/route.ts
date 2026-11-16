@@ -4,7 +4,7 @@ import path from "node:path";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { isPersonalMode } from "@/lib/auth/personal-mode";
 
-const MAX_SANDBOX_FILE_SIZE = 250 * 1024 * 1024; // 250 MB max for sandbox uploads
+const MAX_SANDBOX_FILE_SIZE = 500 * 1024 * 1024; // 500 MB max for sandbox uploads
 
 function allowedRoots(): string[] {
   const roots: string[] = [];

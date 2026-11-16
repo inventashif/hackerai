@@ -36,7 +36,7 @@ describe("upload policy messages", () => {
   it("does not recommend switching modes when Agent uploads exceed the sandbox cap", () => {
     const result = validateUploadPolicy({
       mode: "agent",
-      size: 251 * 1024 * 1024,
+      size: 501 * 1024 * 1024,
       mediaType: "application/zip",
       surface: "client",
     });
@@ -44,7 +44,7 @@ describe("upload policy messages", () => {
     expect(result).toEqual({
       valid: false,
       code: "FILE_SIZE_EXCEEDED",
-      message: "File size must be less than 250MB.",
+      message: "File size must be less than 500MB.",
     });
   });
 });
