@@ -35,7 +35,6 @@ function mimeForPath(filePath: string): string {
 
 function allowedRoots(): string[] {
   const roots: string[] = [];
-  // Prioritize /tmp as it's more likely to exist
   roots.push("/tmp");
   roots.push("/home/user");
   roots.push("/workspace");
@@ -86,13 +85,24 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Invalid path" }, { status: 400, headers: corsHeaders() });
   }
 
+  const isVercel = !!process.env.VERCEL_ENV;
+  const isUploadPath = rawPath.startsWith("/upload/");
+
+  if (isVercel && isUploadPath) {
+    return proxyDownloadFromVMSandbox(req, rawPath);
+  }
+
+  return readFromLocalFS(req, rawPath);
+}
+
+async function readFromLocalFS(req: NextRequest, rawPath: string) {
+  const download = req.nextUrl.searchParams.get("download") === "1";
+  const preview = req.nextUrl.searchParams.get("preview") === "1";
+
   const resolved = path.resolve(rawPath);
   if (!isPathAllowed(resolved, allowedRoots())) {
     return NextResponse.json({ error: "Path not allowed", path: resolved }, { status: 403, headers: corsHeaders() });
   }
-
-  const download = req.nextUrl.searchParams.get("download") === "1";
-  const preview = req.nextUrl.searchParams.get("preview") === "1";
 
   let stat: import("node:fs").Stats;
   try {
@@ -110,7 +120,6 @@ export async function GET(req: NextRequest) {
   const isPdf = path.extname(resolved).toLowerCase() === ".pdf";
   const isText = TEXT_EXTENSIONS.has(path.extname(resolved).toLowerCase());
 
-  // For preview mode, enforce size limit and text-only
   if (preview) {
     if (stat.size > MAX_PREVIEW_BYTES) {
       return NextResponse.json(
@@ -118,7 +127,6 @@ export async function GET(req: NextRequest) {
         { status: 413, headers: corsHeaders() },
       );
     }
-    // For text preview, read as utf-8 and truncate
     if (isText || mime.startsWith("text/") || mime.includes("json")) {
       try {
         const text = await fs.readFile(resolved, "utf-8");
@@ -133,7 +141,6 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Stream file with correct MIME. PDFs open in new tab when ?download≠1 (inline disposition).
   const data = await fs.readFile(resolved);
   const headers: Record<string, string> = {
     ...corsHeaders(),
@@ -150,4 +157,23 @@ export async function GET(req: NextRequest) {
   }
 
   return new NextResponse(new Uint8Array(data), { headers });
+}
+
+async function proxyDownloadFromVMSandbox(req: NextRequest, rawPath: string) {
+  const centrifugoHttpUrl = process.env.CENTRIFUGO_HTTP_URL;
+  const centrifugoApiKey = process.env.CENTRIFUGO_API_KEY;
+
+  if (!centrifugoHttpUrl || !centrifugoApiKey) {
+    return NextResponse.json(
+      {
+        error: "VM sandbox download not configured. Set CENTRIFUGO_HTTP_URL and CENTRIFUGO_API_KEY to enable downloads from the VM sandbox on Vercel.",
+      },
+      { status: 501, headers: corsHeaders() },
+    );
+  }
+
+  return NextResponse.json(
+    { error: "VM sandbox downloads not yet implemented on Vercel. Use self-hosted for full sandbox file access." },
+    { status: 501, headers: corsHeaders() },
+  );
 }

@@ -8,7 +8,6 @@ const MAX_SANDBOX_FILE_SIZE = 500 * 1024 * 1024; // 500 MB max for sandbox uploa
 
 function allowedRoots(): string[] {
   const roots: string[] = [];
-  // Prioritize /tmp as it's more likely to exist
   roots.push("/tmp");
   roots.push("/home/user");
   roots.push("/workspace");
@@ -63,22 +62,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid path" }, { status: 400, headers: corsHeaders() });
   }
 
-  const resolved = path.resolve(targetPath);
-  const roots = allowedRoots();
-  if (!isPathAllowed(resolved, roots)) {
-    return NextResponse.json({ error: "Path not allowed", path: resolved }, { status: 403, headers: corsHeaders() });
-  }
-
-  // Ensure parent directory exists
-  const parentDir = path.dirname(resolved);
-  try {
-    await fs.mkdir(parentDir, { recursive: true });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: `Failed to create directory: ${msg}`, path: parentDir }, { status: 500, headers: corsHeaders() });
-  }
-
-  // Check content length
   const contentLength = req.headers.get("content-length");
   if (contentLength) {
     const size = parseInt(contentLength, 10);
@@ -88,6 +71,31 @@ export async function POST(req: NextRequest) {
         { status: 413, headers: corsHeaders() },
       );
     }
+  }
+
+  const isVercel = !!process.env.VERCEL_ENV;
+  const isUploadPath = targetPath.startsWith("/upload/");
+
+  if (isVercel && isUploadPath) {
+    return proxyUploadToVMSandbox(req, targetPath);
+  }
+
+  return writeToLocalFS(req, targetPath);
+}
+
+async function writeToLocalFS(req: NextRequest, targetPath: string) {
+  const resolved = path.resolve(targetPath);
+  const roots = allowedRoots();
+  if (!isPathAllowed(resolved, roots)) {
+    return NextResponse.json({ error: "Path not allowed", path: resolved }, { status: 403, headers: corsHeaders() });
+  }
+
+  const parentDir = path.dirname(resolved);
+  try {
+    await fs.mkdir(parentDir, { recursive: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: `Failed to create directory: ${msg}`, path: parentDir }, { status: 500, headers: corsHeaders() });
   }
 
   try {
@@ -111,4 +119,85 @@ export async function POST(req: NextRequest) {
     const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.json({ error: msg, path: resolved }, { status: 500, headers: corsHeaders() });
   }
+}
+
+async function proxyUploadToVMSandbox(req: NextRequest, targetPath: string) {
+  const centrifugoHttpUrl = process.env.CENTRIFUGO_HTTP_URL;
+  const centrifugoApiKey = process.env.CENTRIFUGO_API_KEY;
+
+  if (!centrifugoHttpUrl || !centrifugoApiKey) {
+    return NextResponse.json(
+      {
+        error: "VM sandbox upload not configured. Set CENTRIFUGO_HTTP_URL and CENTRIFUGO_API_KEY to enable uploads to the VM sandbox from Vercel.",
+        hint: "On self-hosted, uploads work directly to /upload. On Vercel, configure Centrifugo HTTP API to proxy uploads to the VM sandbox.",
+      },
+      { status: 501, headers: corsHeaders() },
+    );
+  }
+
+  try {
+    const body = await req.arrayBuffer();
+    const actualSize = body.byteLength;
+
+    if (actualSize > MAX_SANDBOX_FILE_SIZE) {
+      return NextResponse.json(
+        { error: "File too large", size: actualSize, maxSize: MAX_SANDBOX_FILE_SIZE },
+        { status: 413, headers: corsHeaders() },
+      );
+    }
+
+    const userId = (await getUserID(req)) ?? "";
+    const connectionId = await getActiveSandboxConnectionId(userId);
+
+    if (!connectionId) {
+      return NextResponse.json(
+        { error: "No active sandbox connection. Start a sandbox session first." },
+        { status: 400, headers: corsHeaders() },
+      );
+    }
+
+    const base64Content = Buffer.from(body).toString("base64");
+    const requestId = crypto.randomUUID();
+    const message = {
+      type: "file_write",
+      requestId,
+      path: targetPath,
+      content: base64Content,
+      isBase64: true,
+      targetConnectionId: connectionId,
+    };
+
+    const channel = `sandbox:connection:${connectionId}#${userId}`;
+    const publishUrl = `${centrifugoHttpUrl.replace(/\/$/, "")}/api/publish`;
+
+    const response = await fetch(publishUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `apikey ${centrifugoApiKey}`,
+      },
+      body: JSON.stringify({ channel, data: message }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return NextResponse.json(
+        { error: `Failed to publish to sandbox: ${response.status} ${errorText}` },
+        { status: 500, headers: corsHeaders() },
+      );
+    }
+
+    return NextResponse.json(
+      { success: true, path: targetPath, size: actualSize, async: true },
+      { headers: corsHeaders() },
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: `Proxy upload failed: ${msg}` }, { status: 500, headers: corsHeaders() });
+  }
+}
+
+async function getActiveSandboxConnectionId(userId: string): Promise<string | null> {
+  // TODO: Query Convex for the user's active sandbox connection ID
+  return null;
 }
