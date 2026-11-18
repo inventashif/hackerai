@@ -1,0 +1,17 @@
+[Unit]
+Description=HackerAI VM disk file gateway
+After=network.target
+
+[Service]
+Type=simple
+User=azureuser
+WorkingDirectory=/home/azureuser/hackerai-files
+EnvironmentFile=/home/azureuser/hackerai-files/gateway.env
+ExecStart=/usr/local/bin/node /home/azureuser/hackerai-files/vm-file-gateway.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

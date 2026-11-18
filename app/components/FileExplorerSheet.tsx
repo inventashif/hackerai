@@ -3,7 +3,13 @@
 import * as React from "react";
 import { Folder } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import { FileExplorer } from "./FileExplorer";
 import type { FileTreeEntry } from "@/lib/file-explorer/types";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -27,8 +33,8 @@ export function FileExplorerSheet({
     if (activeProject?.folder_path) {
       return activeProject.folder_path;
     }
-    // Otherwise default to /tmp (more likely to exist than /home/user)
-    return "/tmp";
+    // Uploads and exported artifacts are stored on the VM, not the app server.
+    return "/upload";
   }, [activeProject?.folder_path]);
 
   const handleSelectFile = React.useCallback((entry: FileTreeEntry) => {
@@ -49,13 +55,22 @@ export function FileExplorerSheet({
         Files
       </Button>
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="flex w-[360px] max-w-[90vw] flex-col p-0 sm:w-[420px]">
+        <SheetContent
+          side="right"
+          className="flex w-[360px] max-w-[90vw] flex-col p-0 sm:w-[420px]"
+        >
           <SheetHeader className="border-b px-4 py-3">
             <SheetTitle className="text-sm">Sandbox Files</SheetTitle>
-            <SheetDescription className="sr-only">Browse files in the current sandbox</SheetDescription>
+            <SheetDescription className="sr-only">
+              Browse files in the current sandbox
+            </SheetDescription>
           </SheetHeader>
           <div className="min-h-0 flex-1">
-            <FileExplorer initialPath={initialPath} onSelectFile={handleSelectFile} className="h-full border-0" />
+            <FileExplorer
+              initialPath={initialPath}
+              onSelectFile={handleSelectFile}
+              className="h-full border-0"
+            />
           </div>
         </SheetContent>
       </Sheet>

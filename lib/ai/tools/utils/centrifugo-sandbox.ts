@@ -1746,19 +1746,23 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         "  except Exception:",
         "    out.append({'name': name, 'path': full, 'type': 'file', 'size': 0})",
         "print(json.dumps(out))",
-      ].join("; ");
+      ].join("\n");
 
-      const command = `python3 -c ${escapeValue(py)} 2>/dev/null || python -c ${escapeValue(py)} 2>/dev/null || echo '[]'`;
+      const command = `python3 -c ${escapeValue(py)}`;
       const result = await this.commands.run(command, {
         displayName: `Listing: ${dirName}`,
       });
-      if (result.exitCode !== 0) return [];
+      if (result.exitCode !== 0) throw new Error("Unable to list VM directory");
       const raw = result.stdout.trim();
       if (!raw) return [];
       try {
         const parsed = JSON.parse(raw) as unknown;
-        if (parsed && typeof parsed === "object" && "error" in (parsed as Record<string, unknown>)) {
-          return [];
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          "error" in (parsed as Record<string, unknown>)
+        ) {
+          throw new Error(String((parsed as { error: unknown }).error));
         }
         if (!Array.isArray(parsed)) return [];
         return parsed as Array<{
@@ -1768,8 +1772,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           size: number;
           mtime?: number;
         }>;
-      } catch {
-        return [];
+      } catch (error) {
+        throw new Error(
+          error instanceof Error
+            ? error.message
+            : "Invalid VM directory response",
+        );
       }
     },
 

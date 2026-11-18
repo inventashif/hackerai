@@ -1225,6 +1225,57 @@ describe("CentrifugoSandbox", () => {
     });
   });
 
+  describe("files.listDetailed", () => {
+    function linuxSandbox() {
+      return createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "6",
+          hostname: "test",
+        },
+      });
+    }
+    it("keeps Python block statements on separate lines", async () => {
+      const sandbox = linuxSandbox();
+      const entries = [
+        { name: "report.md", path: "/upload/report.md", type: "file", size: 5 },
+      ];
+      const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: JSON.stringify(entries),
+        stderr: "",
+        exitCode: 0,
+      });
+      await expect(sandbox.files.listDetailed("/upload")).resolves.toEqual(
+        entries,
+      );
+      const command = run.mock.calls[0][0];
+      expect(command).toContain("\ntry:\n");
+      expect(command).toContain("\nfor name in sorted(entries):\n");
+      expect(command).not.toContain("echo '[]'");
+    });
+    it("does not disguise directory errors as an empty folder", async () => {
+      const sandbox = linuxSandbox();
+      jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: '{"error":"directory unavailable"}',
+        stderr: "",
+        exitCode: 0,
+      });
+      await expect(sandbox.files.listDetailed("/missing")).rejects.toThrow(
+        "directory unavailable",
+      );
+    });
+    it("rejects failed remote commands", async () => {
+      const sandbox = linuxSandbox();
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockResolvedValue({ stdout: "", stderr: "syntax error", exitCode: 1 });
+      await expect(sandbox.files.listDetailed("/upload")).rejects.toThrow(
+        "Unable to list VM directory",
+      );
+    });
+  });
+
   describe("files.write", () => {
     it("uses heredoc approach for text content", async () => {
       jest.useRealTimers();

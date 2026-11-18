@@ -704,6 +704,9 @@ export const getActiveSandboxConnectionId = query({
   args: { userId: v.string() },
   returns: v.union(v.string(), v.null()),
   handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity || identity.subject !== args.userId)
+      throw new Error("Unauthorized");
     const connection = await ctx.db
       .query("local_sandbox_connections")
       .withIndex("by_user_and_status", (q) =>

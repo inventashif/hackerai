@@ -1,8 +1,9 @@
 "use node";
 
 import { v4 as uuidv4 } from "uuid";
-import { promises as fs, existsSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
+import { hasVMStorage, vmFileUrl } from "../lib/file-explorer/vm-storage";
 
 /**
  * Base directory for local file storage on the VM sandbox.
@@ -43,10 +44,7 @@ export function localStorageFilePath(s3Key: string): string {
   if (!isLocalStorageKey(s3Key)) {
     throw new Error(`Invalid storage key: ${s3Key}`);
   }
-  return path.join(
-    /* turbopackIgnore: true */ getLocalStorageDir(),
-    s3Key,
-  );
+  return path.join(/* turbopackIgnore: true */ getLocalStorageDir(), s3Key);
 }
 
 /**
@@ -77,7 +75,9 @@ export async function generateS3UploadUrl(
 ): Promise<{ uploadUrl: string; s3Key: string }> {
   const s3Key = generateS3Key(userId, fileName);
   const sandboxPath = `/upload/${s3Key}`;
-  const uploadUrl = `${getAppBaseUrl()}/api/sandbox/upload?path=${encodeURIComponent(sandboxPath)}`;
+  const uploadUrl = hasVMStorage()
+    ? vmFileUrl("write", sandboxPath, { size: contentLength })
+    : `${getAppBaseUrl()}/api/sandbox/upload?path=${encodeURIComponent(sandboxPath)}`;
   return { uploadUrl, s3Key };
 }
 
@@ -87,7 +87,9 @@ export async function generateS3UploadUrl(
  * which proxies to the VM sandbox.
  */
 export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
+  if (!isLocalStorageKey(s3Key)) throw new Error("Invalid storage key");
   const sandboxPath = `/upload/${s3Key}`;
+  if (hasVMStorage()) return vmFileUrl("read", sandboxPath);
   return `${getAppBaseUrl()}/api/sandbox/file?path=${encodeURIComponent(sandboxPath)}`;
 }
 
@@ -98,6 +100,13 @@ export async function deleteS3Object(s3Key: string): Promise<void> {
   if (!isLocalStorageKey(s3Key)) {
     return;
   }
+  if (hasVMStorage()) {
+    const response = await fetch(vmFileUrl("delete", `/upload/${s3Key}`), {
+      method: "DELETE",
+    });
+    if (!response.ok) throw new Error("Failed to delete VM file");
+    return;
+  }
   await fs.rm(localStorageFilePath(s3Key), { force: true });
 }
 
@@ -105,6 +114,21 @@ export async function deleteS3Object(s3Key: string): Promise<void> {
  * Get object size in bytes from VM sandbox storage.
  */
 export async function getS3ObjectSizeBytes(s3Key: string): Promise<number> {
+  if (!isLocalStorageKey(s3Key)) throw new Error("Invalid storage key");
+  if (hasVMStorage()) {
+    const response = await fetch(vmFileUrl("stat", `/upload/${s3Key}`), {
+      method: "HEAD",
+    });
+    if (!response.ok) throw new Error("File not found in VM storage");
+    const size = Number(response.headers.get("content-length"));
+    if (
+      !response.headers.has("content-length") ||
+      !Number.isSafeInteger(size) ||
+      size < 0
+    )
+      throw new Error("Invalid VM file metadata");
+    return size;
+  }
   const stat = await fs.stat(
     /* turbopackIgnore: true */ localStorageFilePath(s3Key),
   );

@@ -158,6 +158,37 @@ describe("fileActions saveFile upload policy", () => {
     global.fetch = originalFetch;
   });
 
+  it("requires actual storage metadata even when running on Vercel", async () => {
+    const originalEnvironment = process.env.VERCEL_ENV;
+    process.env.VERCEL_ENV = "production";
+    try {
+      const { saveFile } = await import("../fileActions");
+      const { getS3ObjectSizeBytes } = await import("../s3Utils");
+      (getS3ObjectSizeBytes as jest.Mock).mockRejectedValueOnce(
+        new Error("missing on VM"),
+      );
+      const ctx = makeCtx();
+      await expect(
+        saveFile.handler(ctx, {
+          s3Key: "users/user123/missing.txt",
+          name: "missing.txt",
+          mediaType: "text/plain",
+          size: 1024,
+          mode: "agent",
+        }),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({ code: "FILE_NOT_FOUND" }),
+      });
+      expect(ctx.runMutation).not.toHaveBeenCalled();
+      expect(getS3ObjectSizeBytes).toHaveBeenCalledWith(
+        "users/user123/missing.txt",
+      );
+    } finally {
+      if (originalEnvironment === undefined) delete process.env.VERCEL_ENV;
+      else process.env.VERCEL_ENV = originalEnvironment;
+    }
+  });
+
   it("rejects Ask files above the backend file cap and cleans up S3", async () => {
     const { saveFile } = await import("../fileActions");
     const ctx = makeCtx();

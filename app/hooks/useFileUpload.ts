@@ -371,9 +371,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           showRateLimitWarning(rateLimit);
         }
 
-        // Step 2: Upload file directly to object storage via presigned URL.
-        // Azure Blob requires the block-blob type header; detect it from the
-        // SAS signature parameter so the S3 path stays untouched.
+        // Step 2: Stream directly to VM disk using a short-lived upload URL.
         const uploadResponse = await fetch(uploadUrl, {
           method: "PUT",
           body: file,

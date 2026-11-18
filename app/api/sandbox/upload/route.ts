@@ -3,8 +3,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { isPersonalMode } from "@/lib/auth/personal-mode";
-import { api } from "@/convex/_generated/api";
-import { ConvexHttpClient } from "convex/browser";
+import { usesRemoteFileSystem } from "@/lib/file-explorer/remote-sandbox";
+import { vmFileUrl } from "@/lib/file-explorer/vm-storage";
 
 const MAX_SANDBOX_FILE_SIZE = 500 * 1024 * 1024; // 500 MB max for sandbox uploads
 
@@ -14,7 +14,8 @@ function allowedRoots(): string[] {
   roots.push("/home/user");
   roots.push("/workspace");
   roots.push("/app/workspace");
-  if (process.env.LOCAL_STORAGE_DIR) roots.push(path.resolve(process.env.LOCAL_STORAGE_DIR));
+  if (process.env.LOCAL_STORAGE_DIR)
+    roots.push(path.resolve(process.env.LOCAL_STORAGE_DIR));
   if (isPersonalMode()) {
     const home = process.env.HOME;
     if (home) roots.push(path.resolve(home));
@@ -53,15 +54,24 @@ export async function POST(req: NextRequest) {
   try {
     await getUserID(req);
   } catch {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders() });
+    return NextResponse.json(
+      { error: "Unauthorized" },
+      { status: 401, headers: corsHeaders() },
+    );
   }
 
   const targetPath = req.nextUrl.searchParams.get("path")?.trim();
   if (!targetPath) {
-    return NextResponse.json({ error: "Missing ?path=" }, { status: 400, headers: corsHeaders() });
+    return NextResponse.json(
+      { error: "Missing ?path=" },
+      { status: 400, headers: corsHeaders() },
+    );
   }
   if (targetPath.includes("\0")) {
-    return NextResponse.json({ error: "Invalid path" }, { status: 400, headers: corsHeaders() });
+    return NextResponse.json(
+      { error: "Invalid path" },
+      { status: 400, headers: corsHeaders() },
+    );
   }
 
   const contentLength = req.headers.get("content-length");
@@ -75,10 +85,41 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const isVercel = !!process.env.VERCEL_ENV;
-  const isUploadPath = targetPath.startsWith("/upload/");
+  if (
+    !usesRemoteFileSystem() &&
+    req.headers.get("content-type")?.startsWith("application/json") &&
+    req.method === "POST"
+  ) {
+    return NextResponse.json({
+      uploadUrl: `/api/sandbox/upload?path=${encodeURIComponent(targetPath)}`,
+    });
+  }
 
-  if (isVercel && isUploadPath) {
+  if (usesRemoteFileSystem()) {
+    const resolved = path.resolve(targetPath);
+    if (!resolved.startsWith("/upload/")) {
+      return NextResponse.json(
+        { error: "Uploads must be saved under /upload" },
+        { status: 403 },
+      );
+    }
+    if (
+      req.headers.get("content-type")?.startsWith("application/json") &&
+      req.method === "POST"
+    ) {
+      try {
+        const { size } = await req.json();
+        return NextResponse.json(
+          { uploadUrl: vmFileUrl("write", resolved, { size }) },
+          { headers: { "Cache-Control": "no-store" } },
+        );
+      } catch {
+        return NextResponse.json(
+          { error: "Invalid upload size (maximum 500 MB)" },
+          { status: 400 },
+        );
+      }
+    }
     return proxyUploadToVMSandbox(req, targetPath);
   }
 
@@ -89,7 +130,10 @@ async function writeToLocalFS(req: NextRequest, targetPath: string) {
   const resolved = path.resolve(targetPath);
   const roots = allowedRoots();
   if (!isPathAllowed(resolved, roots)) {
-    return NextResponse.json({ error: "Path not allowed", path: resolved }, { status: 403, headers: corsHeaders() });
+    return NextResponse.json(
+      { error: "Path not allowed", path: resolved },
+      { status: 403, headers: corsHeaders() },
+    );
   }
 
   const parentDir = path.dirname(resolved);
@@ -97,7 +141,10 @@ async function writeToLocalFS(req: NextRequest, targetPath: string) {
     await fs.mkdir(parentDir, { recursive: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: `Failed to create directory: ${msg}`, path: parentDir }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json(
+      { error: `Failed to create directory: ${msg}`, path: parentDir },
+      { status: 500, headers: corsHeaders() },
+    );
   }
 
   try {
@@ -106,7 +153,11 @@ async function writeToLocalFS(req: NextRequest, targetPath: string) {
 
     if (actualSize > MAX_SANDBOX_FILE_SIZE) {
       return NextResponse.json(
-        { error: "File too large", size: actualSize, maxSize: MAX_SANDBOX_FILE_SIZE },
+        {
+          error: "File too large",
+          size: actualSize,
+          maxSize: MAX_SANDBOX_FILE_SIZE,
+        },
         { status: 413, headers: corsHeaders() },
       );
     }
@@ -119,92 +170,50 @@ async function writeToLocalFS(req: NextRequest, targetPath: string) {
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: msg, path: resolved }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json(
+      { error: msg, path: resolved },
+      { status: 500, headers: corsHeaders() },
+    );
   }
 }
 
 async function proxyUploadToVMSandbox(req: NextRequest, targetPath: string) {
-  const centrifugoHttpUrl = process.env.CENTRIFUGO_HTTP_URL;
-  const centrifugoApiKey = process.env.CENTRIFUGO_API_KEY;
-
-  if (!centrifugoHttpUrl || !centrifugoApiKey) {
-    return NextResponse.json(
-      {
-        error: "VM sandbox upload not configured. Set CENTRIFUGO_HTTP_URL and CENTRIFUGO_API_KEY to enable uploads to the VM sandbox from Vercel.",
-        hint: "On self-hosted, uploads work directly to /upload. On Vercel, configure Centrifugo HTTP API to proxy uploads to the VM sandbox.",
-      },
-      { status: 501, headers: corsHeaders() },
-    );
-  }
-
   try {
     const body = await req.arrayBuffer();
     const actualSize = body.byteLength;
 
     if (actualSize > MAX_SANDBOX_FILE_SIZE) {
       return NextResponse.json(
-        { error: "File too large", size: actualSize, maxSize: MAX_SANDBOX_FILE_SIZE },
+        {
+          error: "File too large",
+          size: actualSize,
+          maxSize: MAX_SANDBOX_FILE_SIZE,
+        },
         { status: 413, headers: corsHeaders() },
       );
     }
 
-    const userId = (await getUserID(req)) ?? "";
-    const connectionId = await getActiveSandboxConnectionId(userId);
-
-    if (!connectionId) {
-      return NextResponse.json(
-        { error: "No active sandbox connection. Start a sandbox session first." },
-        { status: 400, headers: corsHeaders() },
-      );
-    }
-
-    const base64Content = Buffer.from(body).toString("base64");
-    const requestId = crypto.randomUUID();
-    const message = {
-      type: "file_write",
-      requestId,
-      path: targetPath,
-      content: base64Content,
-      isBase64: true,
-      targetConnectionId: connectionId,
-    };
-
-    const channel = `sandbox:connection:${connectionId}#${userId}`;
-    const publishUrl = `${centrifugoHttpUrl.replace(/\/$/, "")}/api/publish`;
-
-    const response = await fetch(publishUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `apikey ${centrifugoApiKey}`,
+    // Compatibility for old clients with small bodies: wait for the VM write.
+    const response = await fetch(
+      vmFileUrl("write", path.resolve(targetPath), { size: actualSize }),
+      {
+        method: "PUT",
+        body: new Uint8Array(body),
       },
-      body: JSON.stringify({ channel, data: message }),
-    });
-
+    );
     if (!response.ok) {
-      const errorText = await response.text();
-      return NextResponse.json(
-        { error: `Failed to publish to sandbox: ${response.status} ${errorText}` },
-        { status: 500, headers: corsHeaders() },
-      );
+      throw new Error(`VM upload failed (${response.status})`);
     }
 
     return NextResponse.json(
-      { success: true, path: targetPath, size: actualSize, async: true },
+      { success: true, path: targetPath, size: actualSize },
       { headers: corsHeaders() },
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: `Proxy upload failed: ${msg}` }, { status: 500, headers: corsHeaders() });
+    return NextResponse.json(
+      { error: `Proxy upload failed: ${msg}` },
+      { status: 500, headers: corsHeaders() },
+    );
   }
-}
-
-async function getActiveSandboxConnectionId(userId: string): Promise<string | null> {
-  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
-  if (!convexUrl) {
-    return null;
-  }
-  const convex = new ConvexHttpClient(convexUrl);
-  const connectionId = await convex.query(api.localSandbox.getActiveSandboxConnectionId, { userId });
-  return connectionId;
 }

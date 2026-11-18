@@ -185,25 +185,6 @@ export const generateS3UploadUrlAction = action({
       entitlements,
     });
 
-    // On Vercel, /upload/* paths require an active sandbox connection.
-    // Skip for personal mode users (user_personal_local) who may not have
-    // the sandbox connection flow set up on Vercel.
-    const isVercel = !!process.env.VERCEL_ENV;
-    const isPersonalModeUser = userId === "user_personal_local";
-    if (isVercel && !isPersonalModeUser) {
-      const connectionId = await ctx.runQuery(
-        api.localSandbox.getActiveSandboxConnectionId,
-        { userId },
-      );
-      if (!connectionId) {
-        throw new ConvexError({
-          code: "NO_ACTIVE_SANDBOX",
-          message:
-            "No active sandbox connection. Start a sandbox session first.",
-        });
-      }
-    }
-
     try {
       // Generate presigned upload URL with user-scoped S3 key
       const { uploadUrl, s3Key } = await generateS3UploadUrl(

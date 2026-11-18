@@ -769,12 +769,8 @@ export const saveFile = action({
       }
     };
 
-    // On Vercel, files are stored on the VM sandbox, not on Convex servers.
-    // The local filesystem check (getS3ObjectSizeBytes) would fail because
-    // the file lives on the VM's /upload directory. Trust the client-provided
-    // size (which is accurate since the client is uploading the file).
-    const isVercel = !!process.env.VERCEL_ENV;
-    const verifiedSize = isVercel ? args.size : await getS3ObjectSizeBytes(s3Key).catch((error) => {
+    // Always verify size on the storage host; client metadata is not proof of upload.
+    const verifiedSize = await getS3ObjectSizeBytes(s3Key).catch((error) => {
       convexLogger.error("file_upload_s3_metadata_fetch_failed", {
         userId: actingUserId,
         fileName: args.name,

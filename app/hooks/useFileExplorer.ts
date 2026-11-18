@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileTreeEntry } from "@/lib/file-explorer/types";
 
-const DEFAULT_ROOTS = ["/tmp", "/home/user", "/workspace", "/app/workspace"] as string[];
+const DEFAULT_ROOTS = [
+  "/upload",
+  "/tmp",
+  "/home/user",
+  "/workspace",
+  "/app/workspace",
+] as string[];
 
 function initialPath(): string {
   if (typeof window === "undefined") return DEFAULT_ROOTS[0];
@@ -32,12 +38,17 @@ export function useFileExplorer(opts?: { initialPath?: string }) {
     triedRootsRef.current.add(path);
 
     try {
-      const res = await fetch(`/api/sandbox/files?path=${encodeURIComponent(path)}`, {
-        signal: ctrl.signal,
-      });
+      const res = await fetch(
+        `/api/sandbox/files?path=${encodeURIComponent(path)}`,
+        {
+          signal: ctrl.signal,
+        },
+      );
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error((json as { error?: string }).error ?? `HTTP ${res.status}`);
+        throw new Error(
+          (json as { error?: string }).error ?? `HTTP ${res.status}`,
+        );
       }
       const data = json as { path: string; entries: FileTreeEntry[] };
       if (ctrl.signal.aborted) return;
@@ -50,7 +61,10 @@ export function useFileExplorer(opts?: { initialPath?: string }) {
       setEntries([]);
 
       // If directory doesn't exist, try to fallback to a default directory
-      if (errorMessage.includes("no such file or directory") || errorMessage.includes("ENOENT")) {
+      if (
+        errorMessage.includes("no such file or directory") ||
+        errorMessage.includes("ENOENT")
+      ) {
         // Try the next available root that hasn't been tried yet
         for (const nextRoot of DEFAULT_ROOTS) {
           if (!triedRootsRef.current.has(nextRoot)) {

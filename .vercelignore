@@ -1,0 +1,8 @@
+.env*
+bug-reports/
+GBBP18*.md
+agent-dist.tar.gz
+.decode-token.mjs
+.verify-*
+.test-*
+.playwright-mcp/

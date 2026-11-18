@@ -1,7 +1,17 @@
 "use client";
 
 import * as React from "react";
-import { ArrowLeft, ArrowRight, ArrowUp, Home, RefreshCw, Search, Folder, AlertCircle, Upload } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Home,
+  RefreshCw,
+  Search,
+  Folder,
+  AlertCircle,
+  Upload,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useFileExplorer } from "@/app/hooks/useFileExplorer";
@@ -30,7 +40,12 @@ export function FileExplorer({
   const explorer = useFileExplorer({ initialPath });
   const [query, setQuery] = React.useState("");
   const debouncedQuery = useDebouncedValue(query, 200);
-  const [preview, setPreview] = React.useState<{ path: string; text: string; loading: boolean; error?: string } | null>(null);
+  const [preview, setPreview] = React.useState<{
+    path: string;
+    text: string;
+    loading: boolean;
+    error?: string;
+  } | null>(null);
   const [isUploading, setIsUploading] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -40,22 +55,34 @@ export function FileExplorer({
     return explorer.entries.filter((e) => e.name.toLowerCase().includes(q));
   }, [explorer.entries, debouncedQuery]);
 
-  const handlePreview = React.useCallback(async (entry: FileTreeEntry) => {
-    if (entry.type === "directory") return;
-    setPreview({ path: entry.path, text: "", loading: true });
-    try {
-      const res = await fetch(`/api/sandbox/file?path=${encodeURIComponent(entry.path)}&preview=1`);
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error((j as { error?: string }).error ?? `HTTP ${res.status}`);
+  const handlePreview = React.useCallback(
+    async (entry: FileTreeEntry) => {
+      if (entry.type === "directory") return;
+      setPreview({ path: entry.path, text: "", loading: true });
+      try {
+        const res = await fetch(
+          `/api/sandbox/file?path=${encodeURIComponent(entry.path)}&preview=1`,
+        );
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(
+            (j as { error?: string }).error ?? `HTTP ${res.status}`,
+          );
+        }
+        const text = await res.text();
+        setPreview({ path: entry.path, text, loading: false });
+      } catch (e) {
+        setPreview({
+          path: entry.path,
+          text: "",
+          loading: false,
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
-      const text = await res.text();
-      setPreview({ path: entry.path, text, loading: false });
-    } catch (e) {
-      setPreview({ path: entry.path, text: "", loading: false, error: e instanceof Error ? e.message : String(e) });
-    }
-    onSelectFile?.(entry);
-  }, [onSelectFile]);
+      onSelectFile?.(entry);
+    },
+    [onSelectFile],
+  );
 
   const handleDownload = React.useCallback((entry: FileTreeEntry) => {
     const url = `/api/sandbox/file?path=${encodeURIComponent(entry.path)}&download=1`;
@@ -91,66 +118,119 @@ export function FileExplorer({
     fileInputRef.current?.click();
   }, []);
 
-  const handleFileSelect = React.useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  const handleFileSelect = React.useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
 
-    const file = files[0];
-    setIsUploading(true);
+      const file = files[0];
+      setIsUploading(true);
 
-    try {
-      // Upload to current directory in sandbox
-      const targetPath = `${explorer.currentPath}/${file.name}`;
-      const formData = new FormData();
-      formData.append("file", file);
+      try {
+        if (file.size > 500 * 1024 * 1024)
+          throw new Error("Maximum file size is 500 MB");
+        // Uploads live only under /upload, not arbitrary VM/report directories.
+        const directory =
+          explorer.currentPath === "/upload" ||
+          explorer.currentPath.startsWith("/upload/")
+            ? explorer.currentPath
+            : "/upload";
+        const targetPath = `${directory}/${file.name}`;
+        const endpoint = `/api/sandbox/upload?path=${encodeURIComponent(targetPath)}`;
+        const ticket = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ size: file.size }),
+        });
+        const result = await ticket.json();
+        if (!ticket.ok)
+          throw new Error(result.error || "Could not start upload");
+        const res = await fetch(result.uploadUrl, {
+          method: "PUT",
+          body: file,
+        });
 
-      const res = await fetch(`/api/sandbox/upload?path=${encodeURIComponent(targetPath)}`, {
-        method: "POST",
-        body: file,
-      });
+        if (!res.ok) {
+          const errorData = await res
+            .json()
+            .catch(() => ({ error: "Upload failed" }));
+          throw new Error(errorData.error || "Upload failed");
+        }
 
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ error: "Upload failed" }));
-        throw new Error(errorData.error || "Upload failed");
+        toast.success("File uploaded successfully", {
+          description: `${file.name} uploaded to ${directory}`,
+        });
+
+        // Refresh the file explorer to show the new file
+        if (directory !== explorer.currentPath) explorer.navigate(directory);
+        else explorer.refresh();
+      } catch (error) {
+        toast.error("Upload failed", {
+          description: error instanceof Error ? error.message : "Unknown error",
+        });
+      } finally {
+        setIsUploading(false);
+        // Reset file input
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
       }
-
-      toast.success("File uploaded successfully", {
-        description: `${file.name} uploaded to ${explorer.currentPath}`,
-      });
-
-      // Refresh the file explorer to show the new file
-      explorer.refresh();
-    } catch (error) {
-      toast.error("Upload failed", {
-        description: error instanceof Error ? error.message : "Unknown error",
-      });
-    } finally {
-      setIsUploading(false);
-      // Reset file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    }
-  }, [explorer]);
+    },
+    [explorer],
+  );
 
   return (
     <div className={className ?? "flex h-full flex-col border-r bg-background"}>
       {/* Header */}
       <div className="flex items-center gap-1 border-b p-2">
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={explorer.goBack} disabled={!explorer.canGoBack} title="Back">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={explorer.goBack}
+          disabled={!explorer.canGoBack}
+          title="Back"
+        >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={explorer.goForward} disabled={!explorer.canGoForward} title="Forward">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={explorer.goForward}
+          disabled={!explorer.canGoForward}
+          title="Forward"
+        >
           <ArrowRight className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={explorer.goParent} title="Up">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={explorer.goParent}
+          title="Up"
+        >
           <ArrowUp className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => explorer.navigate("/tmp")} title="Home">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => explorer.navigate("/upload")}
+          title="Home"
+        >
           <Home className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={explorer.refresh} title="Refresh">
-          <RefreshCw className={`h-4 w-4 ${explorer.isLoading ? "animate-spin" : ""}`} />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={explorer.refresh}
+          title="Refresh"
+        >
+          <RefreshCw
+            className={`h-4 w-4 ${explorer.isLoading ? "animate-spin" : ""}`}
+          />
         </Button>
         <div className="flex-1" />
         <Button
@@ -191,21 +271,30 @@ export function FileExplorer({
       <div className="flex items-center gap-2 p-2">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter files…" className="h-7 pl-7 text-sm" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter files…"
+            className="h-7 pl-7 text-sm"
+          />
         </div>
       </div>
 
       {/* Entries */}
       <div className="flex-1 overflow-auto px-1 py-1">
         {explorer.isLoading && explorer.entries.length === 0 ? (
-          <div className="px-3 py-6 text-center text-sm text-muted-foreground">Loading…</div>
+          <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+            Loading…
+          </div>
         ) : explorer.error ? (
           <div className="flex items-start gap-2 px-3 py-4 text-sm text-amber-600">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="break-all">{explorer.error}</span>
           </div>
         ) : filtered.length === 0 ? (
-          <div className="px-3 py-6 text-center text-sm text-muted-foreground">No files</div>
+          <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+            No files
+          </div>
         ) : (
           <div className="space-y-0.5">
             {filtered.map((entry) => (
@@ -231,21 +320,44 @@ export function FileExplorer({
               {preview.path.split("/").pop()}
             </span>
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => handleOpenInNewTab({ name: preview.path.split("/").pop() ?? "", path: preview.path, type: "file", size: 0 })}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() =>
+                  handleOpenInNewTab({
+                    name: preview.path.split("/").pop() ?? "",
+                    path: preview.path,
+                    type: "file",
+                    size: 0,
+                  })
+                }
+              >
                 Open in new tab
               </Button>
-              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setPreview(null)}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                onClick={() => setPreview(null)}
+              >
                 ×
               </Button>
             </div>
           </div>
           <div className="max-h-[40vh] overflow-auto p-2">
             {preview.loading ? (
-              <div className="py-6 text-center text-xs text-muted-foreground">Loading preview…</div>
+              <div className="py-6 text-center text-xs text-muted-foreground">
+                Loading preview…
+              </div>
             ) : preview.error ? (
-              <div className="text-xs text-red-600 break-all">{preview.error}</div>
+              <div className="text-xs text-red-600 break-all">
+                {preview.error}
+              </div>
             ) : (
-              <pre className="whitespace-pre-wrap break-words text-xs font-mono leading-relaxed">{preview.text}</pre>
+              <pre className="whitespace-pre-wrap break-words text-xs font-mono leading-relaxed">
+                {preview.text}
+              </pre>
             )}
           </div>
         </div>
