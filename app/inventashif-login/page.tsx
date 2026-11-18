@@ -1,3 +1,5 @@
+"use client";
+
 import { Suspense } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,10 +8,6 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Loader2, AlertCircle, Mail, Lock, Shield } from "lucide-react";
 import { useState } from "react";
-import { signOut } from "@/lib/auth/personal-authkit";
-import { redirect } from "next/navigation";
-
-export const runtime = "nodejs";
 
 function RealLoginForm() {
   const [email, setEmail] = useState("");
@@ -34,7 +32,7 @@ function RealLoginForm() {
         const data = await response.json();
         if (data.accessToken) {
           // Success - redirect to home
-          redirect("/");
+          window.location.href = "/";
           return;
         }
       }
@@ -124,7 +122,10 @@ function RealLoginForm() {
         <Button
           variant="outline"
           className="w-full"
-          onClick={() => signOut()}
+          onClick={async () => {
+            await fetch("/api/clear-auth-cookies", { method: "POST" });
+            window.location.href = "/";
+          }}
           disabled={loading}
         >
           <Shield className="mr-2 size-4" />
