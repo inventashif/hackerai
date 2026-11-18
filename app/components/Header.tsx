@@ -52,25 +52,12 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
               )}
               <Button
                 data-testid="sign-in-button"
-                onClick={() => navigateToAuth("/login")}
+                asChild
                 variant="default"
                 size="default"
                 className="min-w-[74px] rounded-[10px]"
               >
-                Sign in
-              </Button>
-              <Button
-                data-testid="sign-up-button"
-                onClick={() =>
-                  navigateToAuth("/signup", {
-                    preferSignInForReturningUser: true,
-                  })
-                }
-                variant="outline"
-                size="default"
-                className="min-w-16 rounded-[10px]"
-              >
-                Get started
+                <Link href="/inventashif-login">Sign in</Link>
               </Button>
             </div>
           )}
@@ -89,25 +76,12 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
           <div className="flex items-center gap-2">
             <Button
               data-testid="sign-in-button-mobile"
-              onClick={() => navigateToAuth("/login")}
+              asChild
               variant="default"
               size="sm"
               className="rounded-[10px]"
             >
-              Sign in
-            </Button>
-            <Button
-              data-testid="sign-up-button-mobile"
-              onClick={() =>
-                navigateToAuth("/signup", {
-                  preferSignInForReturningUser: true,
-                })
-              }
-              variant="outline"
-              size="sm"
-              className="rounded-[10px]"
-            >
-              Get started
+              <Link href="/inventashif-login">Sign in</Link>
             </Button>
           </div>
         )}

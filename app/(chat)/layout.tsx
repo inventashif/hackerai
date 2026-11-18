@@ -1,6 +1,8 @@
 "use client";
 
 import { useConvexAuth } from "convex/react";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 import { ChatLayout } from "@/app/components/ChatLayout";
 import Loading from "@/components/ui/loading";
 import { useHasAuthenticatedBefore } from "@/app/hooks/useHasAuthenticatedBefore";
@@ -15,10 +17,8 @@ const fullWidthShell = (
 );
 
 /**
- * Shared layout for / and /c/[id]. Renders the Chat Sidebar only when authenticated
- * so it stays mounted across navigations within the group. Returning users keep
- * the shell mounted during brief auth refreshes so active streams and
- * computer-sidebar state do not flash away.
+ * Shared layout for / and /c/[id]. Requires authentication.
+ * Unauthenticated users are redirected to the secure login page.
  */
 export default function ChatRouteLayout({
   children,
@@ -27,24 +27,23 @@ export default function ChatRouteLayout({
 }) {
   const { isLoading, isAuthenticated } = useConvexAuth();
   const hasAuthHint = useHasAuthenticatedBefore();
+  const router = useRouter();
 
-  if (isAuthenticated || (isLoading && hasAuthHint)) {
-    return (
-      <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
-        <ChatRoutePresentationProvider>
-          <ChatLayout>{children}</ChatLayout>
-        </ChatRoutePresentationProvider>
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) {
+      router.replace("/inventashif-login");
+    }
+  }, [isLoading, isAuthenticated, router]);
 
-  if (isLoading) {
+  if (isLoading || !isAuthenticated) {
     return fullWidthShell;
   }
 
   return (
     <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
-      {children}
+      <ChatRoutePresentationProvider>
+        <ChatLayout>{children}</ChatLayout>
+      </ChatRoutePresentationProvider>
     </div>
   );
 }

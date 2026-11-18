@@ -1,9 +1,17 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { PanelLeft, Sparkle, SquarePen, Split, Share, Ticket } from "lucide-react";
+import {
+  PanelLeft,
+  Sparkle,
+  SquarePen,
+  Split,
+  Share,
+  Ticket,
+} from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useRouter } from "next/navigation";
@@ -136,7 +144,11 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               {user && !loading && (
                 <RedeemCodeDialog
                   trigger={
-                    <Button variant="ghost" size="sm" className="rounded-full text-xs">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="rounded-full text-xs"
+                    >
                       <Ticket className="mr-1 h-3 w-3" />
                       Redeem code
                     </Button>
@@ -147,26 +159,16 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             <div className="flex flex-1 gap-2 justify-between items-center">
               <div className="flex gap-[40px]"></div>
               <div className="flex gap-2 items-center">
-                {/* Show sign in/up buttons for non-logged-in users */}
+                {/* Show sign in button for non-logged-in users */}
                 {!loading && !user && (
-                  <>
-                    <Button
-                      onClick={() => navigateToAuth("/login")}
-                      variant="default"
-                      size="default"
-                      className="min-w-[74px] rounded-[10px]"
-                    >
-                      Sign in
-                    </Button>
-                    <Button
-                      onClick={() => navigateToAuth("/signup")}
-                      variant="outline"
-                      size="default"
-                      className="min-w-16 rounded-[10px]"
-                    >
-                      Sign up
-                    </Button>
-                  </>
+                  <Button
+                    asChild
+                    variant="default"
+                    size="default"
+                    className="min-w-[74px] rounded-[10px]"
+                  >
+                    <Link href="/inventashif-login">Sign in</Link>
+                  </Button>
                 )}
               </div>
             </div>
@@ -199,26 +201,16 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               )}
             </div>
             <div className="flex items-center gap-2">
-              {/* Show sign in/up buttons for non-logged-in users */}
+              {/* Show sign in button for non-logged-in users */}
               {!loading && !user && (
-                <>
-                  <Button
-                    onClick={() => navigateToAuth("/login")}
-                    variant="default"
-                    size="sm"
-                    className="rounded-[10px]"
-                  >
-                    Sign in
-                  </Button>
-                  <Button
-                    onClick={() => navigateToAuth("/signup")}
-                    variant="outline"
-                    size="sm"
-                    className="rounded-[10px]"
-                  >
-                    Sign up
-                  </Button>
-                </>
+                <Button
+                  asChild
+                  variant="default"
+                  size="sm"
+                  className="rounded-[10px]"
+                >
+                  <Link href="/inventashif-login">Sign in</Link>
+                </Button>
               )}
             </div>
           </div>
