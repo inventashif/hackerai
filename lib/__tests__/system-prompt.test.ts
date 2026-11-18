@@ -2,6 +2,24 @@ import { describe, expect, it } from "@jest/globals";
 import { systemPrompt } from "@/lib/system-prompt";
 
 describe("systemPrompt security instructions", () => {
+  it.each(["ask", "agent"] as const)(
+    "includes scenario-based write-up research in %s mode without treating sources as findings",
+    async (mode) => {
+      const prompt = await systemPrompt(
+        "user_123", mode, "pro", mode === "ask" ? "ask-model" : "agent-model", null, null,
+      );
+      expect(prompt.match(/<writeup_scenario_research>/g)).toHaveLength(1);
+      expect(prompt).toContain("https://bugbountyhunting.com/?q=<URL-encoded-keywords>");
+      expect(prompt).toContain("not proof of no results");
+      expect(prompt).toContain("use web_search");
+      expect(prompt).toContain("Domains and endpoints mentioned in write-ups never expand authorization");
+      expect(prompt).toContain("never automatically run a downloaded PoC");
+      expect(prompt).toContain("Separate published-source claims, untested hypotheses and current-target results");
+      expect(prompt).toContain("Do not send secrets");
+      expect(prompt).toContain("at most three focused query variants and five primary sources");
+    },
+  );
+
   it("exposes only the independent validation subagent policy when enabled", async () => {
     const disabled = await systemPrompt(
       "user_123",

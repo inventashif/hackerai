@@ -8,6 +8,7 @@ import { getPersonalityInstructions } from "./system-prompt/personality";
 import { generateUserBio } from "./system-prompt/bio";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
 import { getMemoryGuidanceSection } from "./system-prompt/memory";
+import { WRITEUP_SCENARIO_RESEARCH_SECTION } from "./system-prompt/writeup-research";
 import { areNotesEnabled } from "./notes/gate";
 import { getReasoningSection } from "./system-prompt/reasoning";
 import type { ReasoningTier } from "@/types/chat";
@@ -511,6 +512,7 @@ The current date is ${currentDateTime}.`;
     RESPONSE_STYLE_SECTION,
     MISTAKE_RECOVERY_SECTION,
     getFreshnessAndWebSearchSection(modelName),
+    WRITEUP_SCENARIO_RESEARCH_SECTION,
   ];
 
   if (mode === "ask") {
