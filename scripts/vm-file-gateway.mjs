@@ -24,7 +24,7 @@ export function verifyTicket(ticket, secret, now = Date.now()) {
     claims.expires > now + 61 * 60_000
   )
     throw new Error("Expired ticket");
-  if (!["read", "write", "stat", "delete"].includes(claims.operation))
+  if (!["read", "write", "stat", "delete", "list"].includes(claims.operation))
     throw new Error("Invalid operation");
   if (
     typeof claims.path !== "string" ||
@@ -103,6 +103,7 @@ export function createGateway({ secret, origin, root = "/upload" }) {
       return json(401, { error: "Invalid or expired file ticket" });
     }
     const methods = {
+      list: "GET",
       read: "GET",
       write: "PUT",
       stat: "HEAD",
@@ -112,6 +113,28 @@ export function createGateway({ secret, origin, root = "/upload" }) {
       return json(405, { error: "Method not allowed" });
     let temporary;
     try {
+      if (claims.operation === "list") {
+        const rootPath = path.resolve(claims.path);
+        const dirents = await fs.readdir(rootPath, { withFileTypes: true });
+        const entries = await Promise.all(
+          dirents.map(async (entry) => {
+            const fullPath = path.join(rootPath, entry.name);
+            const stat = await fs.lstat(fullPath).catch(() => null);
+            return {
+              name: entry.name,
+              path: fullPath,
+              type: entry.isSymbolicLink()
+                ? "symlink"
+                : entry.isDirectory()
+                  ? "directory"
+                  : "file",
+              size: stat?.size || 0,
+              mtime: stat?.mtimeMs,
+            };
+          }),
+        );
+        return json(200, { path: rootPath, entries });
+      }
       if (claims.operation === "write") {
         const target = await uploadPath(claims.path, root);
         const length = req.headers["content-length"];

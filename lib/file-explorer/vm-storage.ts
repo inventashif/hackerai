@@ -1,10 +1,14 @@
 import { createHmac } from "node:crypto";
 
 export const MAX_VM_UPLOAD_BYTES = 500 * 1024 * 1024;
-export type VMFileOperation = "read" | "write" | "stat" | "delete";
+export type VMFileOperation = "read" | "write" | "stat" | "delete" | "list";
 
 export function hasVMStorage(): boolean {
   return Boolean(process.env.VM_STORAGE_URL || process.env.CENTRIFUGO_WS_URL);
+}
+
+export function usesRemoteFileSystem(): boolean {
+  return Boolean(process.env.VERCEL_ENV || hasVMStorage());
 }
 
 /** Exact-path, short-lived capabilities; never expose a long-lived VM secret. */

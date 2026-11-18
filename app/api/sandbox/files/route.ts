@@ -4,9 +4,10 @@ import path from "node:path";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { isPersonalMode } from "@/lib/auth/personal-mode";
 import {
-  openFileSandbox,
   usesRemoteFileSystem,
-} from "@/lib/file-explorer/remote-sandbox";
+  vmFileUrl,
+} from "@/lib/file-explorer/vm-storage";
+import type { FileTreeEntry } from "@/lib/file-explorer/types";
 
 // Allowed roots: in personal mode allow any path under HOME or cwd;
 // in production restrict to workspace volumes.
@@ -56,9 +57,8 @@ export async function OPTIONS() {
 }
 
 export async function GET(req: NextRequest) {
-  let userId: string;
   try {
-    userId = await getUserID(req);
+    await getUserID(req);
   } catch {
     return NextResponse.json(
       { error: "Unauthorized" },
@@ -84,10 +84,19 @@ export async function GET(req: NextRequest) {
   }
 
   if (usesRemoteFileSystem()) {
-    let sandbox;
     try {
-      sandbox = await openFileSandbox(userId);
-      const entries = await sandbox.files.listDetailed(resolved);
+      const response = await fetch(vmFileUrl("list", resolved), {
+        cache: "no-store",
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok)
+        return NextResponse.json(
+          { error: "Unable to list VM directory" },
+          { status: response.status },
+        );
+      const { entries } = (await response.json()) as {
+        entries: FileTreeEntry[];
+      };
       const showHidden = req.nextUrl.searchParams.get("showHidden") === "1";
       const filtered = entries.filter(
         (entry) => showHidden || !entry.name.startsWith("."),
@@ -106,8 +115,6 @@ export async function GET(req: NextRequest) {
         { error: error instanceof Error ? error.message : "VM listing failed" },
         { status: 502 },
       );
-    } finally {
-      await sandbox?.close();
     }
   }
 

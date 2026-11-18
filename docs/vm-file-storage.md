@@ -6,9 +6,7 @@ only upload destination; existing reports elsewhere on that VM remain browsable.
 
 ## Transport
 
-- Directory listings use the authenticated user's registered VM connection and
-  the existing acknowledged Centrifugo command transport.
-- Uploads, downloads, size checks and deletion use `scripts/vm-file-gateway.mjs`.
+- Directory listings, uploads, downloads, size checks and deletion use `scripts/vm-file-gateway.mjs`.
   It listens on loopback port 9002, behind the existing HTTPS reverse proxy.
 - The application/Convex sign exact-path, operation-specific, expiring tickets.
   The browser receives a ticket, never a long-lived VM key. File bytes stream

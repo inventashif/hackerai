@@ -2,12 +2,14 @@ import { config } from "dotenv";
 import { createHash } from "node:crypto";
 
 config({ path: process.env.VERIFY_ENV_FILE, override: true, quiet: true });
-const { openFileSandbox } = await import("../lib/file-explorer/remote-sandbox");
 const { vmFileUrl } = await import("../lib/file-explorer/vm-storage");
-const sandbox = await openFileSandbox("user_personal_local");
-try {
+{
   const root = "/home/azureuser/gbbp18-recon/bug-reports";
-  const entries = await sandbox.files.listDetailed(root);
+  const listing = await fetch(vmFileUrl("list", root));
+  if (!listing.ok) throw new Error(`VM listing returned ${listing.status}`);
+  const { entries } = (await listing.json()) as {
+    entries: Array<{ name: string; path: string; type: string }>;
+  };
   console.log(
     JSON.stringify({
       directory: root,
@@ -28,6 +30,4 @@ try {
       }),
     );
   }
-} finally {
-  await sandbox.close();
 }

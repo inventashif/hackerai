@@ -3,8 +3,10 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { isPersonalMode } from "@/lib/auth/personal-mode";
-import { usesRemoteFileSystem } from "@/lib/file-explorer/remote-sandbox";
-import { vmFileUrl } from "@/lib/file-explorer/vm-storage";
+import {
+  usesRemoteFileSystem,
+  vmFileUrl,
+} from "@/lib/file-explorer/vm-storage";
 
 const TEXT_EXTENSIONS = new Set([
   ".txt",

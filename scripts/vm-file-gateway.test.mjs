@@ -122,3 +122,31 @@ test("read rejects directories and limits preview size", async () => {
   await fs.writeFile(file, Buffer.alloc(2 * 1024 * 1024 + 1));
   assert.equal((await fetch(url("read", file, { preview: true }))).status, 413);
 });
+
+test("lists actual VM directory entries including names with spaces and symlinks", async () => {
+  const directory = path.join(root, "listing");
+  await fs.mkdir(directory);
+  await fs.mkdir(path.join(directory, "folder"));
+  await fs.writeFile(path.join(directory, "a report.md"), "report");
+  await fs.symlink("a report.md", path.join(directory, "link"));
+  const response = await fetch(url("list", directory));
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.path, directory);
+  assert.equal(
+    result.entries.find((entry) => entry.name === "a report.md").size,
+    6,
+  );
+  assert.equal(
+    result.entries.find((entry) => entry.name === "folder").type,
+    "directory",
+  );
+  assert.equal(
+    result.entries.find((entry) => entry.name === "link").type,
+    "symlink",
+  );
+  assert.equal(
+    (await fetch(url("list", path.join(directory, "missing")))).status,
+    404,
+  );
+});
