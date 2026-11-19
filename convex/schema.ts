@@ -102,6 +102,12 @@ const validationConfidenceValidator = v.union(
 );
 
 export default defineSchema({
+  personal_login_limits: defineTable({
+    key: v.string(), count: v.number(), reset_at: v.number(),
+  }).index("by_key", ["key"]).index("by_reset", ["reset_at"]),
+  personal_login_sessions: defineTable({
+    session_id: v.string(), expires_at: v.number(),
+  }).index("by_session", ["session_id"]).index("by_expiry", ["expires_at"]),
   projects: defineTable({
     user_id: v.string(),
     name: v.string(),

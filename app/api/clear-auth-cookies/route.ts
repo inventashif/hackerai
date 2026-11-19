@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isPersonalMode } from "@/lib/auth/personal-mode";
 
 export const POST = async (req: NextRequest) => {
+  if (isPersonalMode()) {
+    const { POST } = await import("../auth/logout/route");
+    return POST(req);
+  }
   const headers = new Headers();
   const cookieAttrs =
     "Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax";

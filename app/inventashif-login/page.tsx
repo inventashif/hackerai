@@ -30,16 +30,16 @@ function RealLoginForm() {
     setLoading(true);
 
     try {
-      // For personal mode, the auth flow is handled by the personal-authkit
-      // which creates a token automatically. We just need to redirect to trigger it.
-      const response = await fetch("/api/auth/personal-token", {
-        method: "GET",
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
         credentials: "include",
       });
 
       if (response.ok) {
         const data = await response.json();
-        if (data.accessToken) {
+        if (data.success) {
           // Success - redirect to home
           window.location.href = "/";
           return;
@@ -47,7 +47,12 @@ function RealLoginForm() {
       }
 
       // If we get here, something went wrong
-      setError("Authentication failed. Please try again.");
+      setPassword("");
+      setError(
+        response.status === 429
+          ? "Too many login attempts. Try again later."
+          : "Invalid email or password, or login is temporarily unavailable.",
+      );
     } catch {
       setError("An unexpected error occurred. Please try again.");
     } finally {
@@ -71,6 +76,7 @@ function RealLoginForm() {
             className="pl-10"
             required
             autoComplete="email"
+            maxLength={254}
           />
         </div>
       </div>
@@ -89,6 +95,7 @@ function RealLoginForm() {
             className="pl-10"
             required
             autoComplete="current-password"
+            maxLength={1024}
           />
         </div>
       </div>
@@ -130,7 +137,9 @@ export default function RealLoginPage() {
                 Secure Access
               </CardTitle>
             </div>
-            <CardDescription>Personal mode authentication</CardDescription>
+            <CardDescription>
+              Private access. Sign in to continue.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <Suspense

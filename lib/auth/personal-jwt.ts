@@ -1,6 +1,7 @@
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { exportJWK, SignJWT, jwtVerify, type JWTPayload } from "jose";
+import { loginStore, SESSION_SECONDS } from "./login-security";
 import {
   PERSONAL_COOKIE_NAME,
   PERSONAL_USER_ID,
@@ -10,7 +11,7 @@ import {
 } from "./personal-mode";
 
 const JWT_ALG = "RS256";
-const JWT_TTL = "30d";
+const JWT_TTL = "5m";
 
 function readOptionalFile(pathValue: string | undefined): string | undefined {
   const filePath = pathValue?.trim();
@@ -62,7 +63,7 @@ export async function getPersonalJwks() {
     keys: [
       {
         ...jwk,
-        kid: "hackerai-personal",
+        kid: process.env.PERSONAL_JWT_KEY_ID || "hackerai-personal-v2",
         alg: JWT_ALG,
         use: "sig",
       },
@@ -81,7 +82,11 @@ export async function signPersonalAccessToken(): Promise<string> {
     name: email,
     entitlements: ["ultra-plan"],
   })
-    .setProtectedHeader({ alg: JWT_ALG, kid: "hackerai-personal", typ: "JWT" })
+    .setProtectedHeader({
+      alg: JWT_ALG,
+      kid: process.env.PERSONAL_JWT_KEY_ID || "hackerai-personal-v2",
+      typ: "JWT",
+    })
     .setSubject(PERSONAL_USER_ID)
     .setIssuer(issuer)
     .setAudience(audience)
@@ -103,9 +108,53 @@ export async function verifyPersonalAccessToken(
 }
 
 export function serializePersonalSessionCookie(token: string): string {
-  const maxAge = 60 * 60 * 24 * 30;
+  const maxAge = SESSION_SECONDS;
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   return `${PERSONAL_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+export async function signPersonalSessionToken(
+  sessionId: string,
+): Promise<string> {
+  return new SignJWT({ purpose: "browser-session", auth_version: 2 })
+    .setProtectedHeader({
+      alg: JWT_ALG,
+      kid: process.env.PERSONAL_JWT_KEY_ID || "hackerai-personal-v2",
+      typ: "JWT",
+    })
+    .setSubject(PERSONAL_USER_ID)
+    .setJti(sessionId)
+    .setIssuer(getPersonalJwtIssuer())
+    .setAudience(`${getPersonalJwtAudience()}:session`)
+    .setIssuedAt()
+    .setExpirationTime(`${SESSION_SECONDS}s`)
+    .sign(createPrivateKey(getPrivateKeyPem()));
+}
+
+export async function verifyPersonalSessionToken(
+  token: string,
+): Promise<JWTPayload> {
+  const { payload } = await jwtVerify(
+    token,
+    createPublicKey(getPublicKeyPem()),
+    {
+      issuer: getPersonalJwtIssuer(),
+      audience: `${getPersonalJwtAudience()}:session`,
+      algorithms: [JWT_ALG],
+      requiredClaims: ["exp", "iat", "sub", "jti"],
+      maxTokenAge: `${SESSION_SECONDS}s`,
+    },
+  );
+  if (
+    payload.sub !== PERSONAL_USER_ID ||
+    payload.purpose !== "browser-session" ||
+    payload.auth_version !== 2 ||
+    !payload.jti
+  )
+    throw new Error("Invalid session");
+  if (!(await loginStore("validSession", { sessionId: payload.jti })))
+    throw new Error("Session expired or revoked");
+  return payload;
 }
 
 export function clearPersonalSessionCookie(): string {

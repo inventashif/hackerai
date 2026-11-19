@@ -1,4 +1,7 @@
-export const PERSONAL_COOKIE_NAME = "personal-session";
+export const PERSONAL_COOKIE_NAME =
+  process.env.NODE_ENV === "production"
+    ? "__Host-hackerai-session"
+    : "hackerai-session";
 export const PERSONAL_ACCESS_TOKEN_HEADER = "x-personal-access-token";
 export const PERSONAL_USER_ID = "user_personal_local";
 export const PERSONAL_JWT_AUDIENCE = "hackerai-personal";
