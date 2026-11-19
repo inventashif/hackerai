@@ -40,7 +40,18 @@ export function getAgentAutoContinueStopSource(state: {
   stoppedDueToTokenExhaustion: boolean;
   stoppedDueToElapsedTimeout?: boolean;
   stoppedDueToPostSummarizationIncomplete: boolean;
+  /** User cancellation or a safety/budget stop takes precedence over a time slice. */
+  blocked?: boolean;
 }): AgentAutoContinueStopSource | null {
+  if (
+    state.blocked ||
+    state.finishReason === BUDGET_EXHAUSTION_FINISH_REASON ||
+    state.finishReason === "agent-run-spend-cap" ||
+    state.finishReason === "doom-loop" ||
+    state.finishReason === "error" ||
+    state.finishReason === "content-filter"
+  )
+    return null;
   if (state.stoppedDueToTokenExhaustion) {
     return "post_summarization_token_exhaustion";
   }

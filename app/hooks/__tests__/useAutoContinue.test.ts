@@ -70,6 +70,106 @@ describe("useAutoContinue", () => {
     jest.useRealTimers();
   });
 
+  it("does not lose a queued handoff when trailing stream metadata arrives", () => {
+    const sendMessage = jest.fn();
+    const { result } = renderHook(
+      () => useTestHarness(buildParams({ sendMessage })),
+      { wrapper: createWrapper() },
+    );
+    const parts = pushAutoContinue(result);
+    act(() => {
+      jest.advanceTimersByTime(200);
+    });
+    act(() => {
+      result.current.setDataStream([
+        ...parts,
+        { type: "data-context-usage", data: {} },
+      ] as any);
+    });
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(result.current.autoContinueCount).toBe(1);
+  });
+
+  it("does not queue twice for duplicate signals before the handoff starts", () => {
+    const sendMessage = jest.fn();
+    const { result } = renderHook(
+      () => useTestHarness(buildParams({ sendMessage })),
+      { wrapper: createWrapper() },
+    );
+    const parts = pushAutoContinue(result);
+    pushAutoContinue(result, parts);
+    act(() => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(result.current.autoContinueCount).toBe(1);
+  });
+
+  it("checks a late user stop again at dispatch time", () => {
+    const sendMessage = jest.fn();
+    const hasManuallyStoppedRef = { current: false };
+    const { result } = renderHook(
+      () => useTestHarness(buildParams({ sendMessage, hasManuallyStoppedRef })),
+      { wrapper: createWrapper() },
+    );
+    pushAutoContinue(result);
+    hasManuallyStoppedRef.current = true;
+    act(() => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(result.current.isAutoContinuing).toBe(false);
+  });
+
+  it.each([{ chatMode: "ask" }, { status: "submitted" }])(
+    "cancels a queued continuation when live state changes to %o",
+    (override) => {
+      const sendMessage = jest.fn();
+      const { result, rerender } = renderHook(
+        (params: UseAutoContinueParams) => useTestHarness(params),
+        {
+          initialProps: buildParams({ sendMessage }),
+          wrapper: createWrapper(),
+        },
+      );
+      pushAutoContinue(result);
+      rerender(
+        buildParams({
+          sendMessage,
+          ...override,
+        } as Partial<UseAutoContinueParams>),
+      );
+      act(() => {
+        jest.advanceTimersByTime(1000);
+      });
+      expect(sendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("detects a fresh signal after the data stream is cleared", () => {
+    const sendMessage = jest.fn();
+    const { result } = renderHook(
+      () => useTestHarness(buildParams({ sendMessage })),
+      { wrapper: createWrapper() },
+    );
+    act(() => {
+      result.current.setDataStream([
+        { type: "data-context-usage", data: {} },
+      ] as any);
+    });
+    act(() => {
+      result.current.setDataStream([]);
+    });
+    pushAutoContinue(result);
+    act(() => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("sets isAutoResuming to true when data-auto-continue arrives", () => {
     const params = buildParams({ status: "streaming" });
     const { result } = renderHook(() => useTestHarness(params), {

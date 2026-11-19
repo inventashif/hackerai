@@ -199,6 +199,34 @@ describe("tokenExhaustedAfterSummarization", () => {
 });
 
 describe("getAgentAutoContinueStopSource", () => {
+  it.each([
+    "budget-exhausted",
+    "agent-run-spend-cap",
+    "doom-loop",
+    "error",
+    "content-filter",
+  ])("does not override %s with an elapsed-time signal", (finishReason) => {
+    expect(
+      getAgentAutoContinueStopSource({
+        finishReason,
+        stoppedDueToTokenExhaustion: false,
+        stoppedDueToElapsedTimeout: true,
+        stoppedDueToPostSummarizationIncomplete: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not resume a user/safety stop even when context compaction also fired", () => {
+    expect(
+      getAgentAutoContinueStopSource({
+        finishReason: "context-limit",
+        blocked: true,
+        stoppedDueToTokenExhaustion: true,
+        stoppedDueToElapsedTimeout: true,
+        stoppedDueToPostSummarizationIncomplete: true,
+      }),
+    ).toBeNull();
+  });
   const baseState = {
     finishReason: "stop",
     stoppedDueToTokenExhaustion: false,

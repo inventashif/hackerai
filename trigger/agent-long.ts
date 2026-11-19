@@ -4447,14 +4447,24 @@ export const agentLongTask = task({
                         sendFileMetadataToStream(accumulatedFiles);
                       }
 
-                      // Don't auto-continue on elapsed timeout. Runs that hit
-                      // their plan cap are large enough that the user should
-                      // explicitly decide whether to continue.
+                      // A time slice is not task completion. Hand off saved
+                      // progress just like the in-process backend; usage and
+                      // cancellation checks still apply to every resumed run.
                       const autoContinueStopSource =
                         getAgentAutoContinueStopSource({
+                          blocked:
+                            state.stoppedDueToBudgetExhaustion ||
+                            state.stoppedDueToAgentRunSpendCap ||
+                            state.stoppedDueToDoomLoop ||
+                            state.stoppedDueToAssistantContentLoop ||
+                            (isAborted &&
+                              triggerSignal.aborted &&
+                              !state.stoppedDueToElapsedTimeout),
                           finishReason: state.streamFinishReason,
                           stoppedDueToTokenExhaustion:
                             state.stoppedDueToTokenExhaustion,
+                          stoppedDueToElapsedTimeout:
+                            state.stoppedDueToElapsedTimeout,
                           stoppedDueToPostSummarizationIncomplete:
                             state.stoppedDueToPostSummarizationIncomplete,
                         });

@@ -77,6 +77,7 @@ export function useAutoContinue({
   const errorChainCountRef = useRef(0);
 
   const statusRef = useLatestRef(status);
+  const chatModeRef = useLatestRef(chatMode);
   const todosRef = useLatestRef(todos);
   const sendMessageRef = useLatestRef(sendMessage);
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
@@ -109,8 +110,14 @@ export function useAutoContinue({
 
   // Detect data-auto-continue signal and immediately mark pending
   useEffect(() => {
-    if (!dataStream?.length) return;
+    if (!dataStream?.length) {
+      lastProcessedIndexRef.current = 0;
+      return;
+    }
     const currentChatDataStream = dataStream.filter(isPartForCurrentChat);
+    if (currentChatDataStream.length < lastProcessedIndexRef.current) {
+      lastProcessedIndexRef.current = 0;
+    }
     const newParts = currentChatDataStream.slice(lastProcessedIndexRef.current);
     if (
       newParts.length > 0 &&
@@ -118,7 +125,11 @@ export function useAutoContinue({
     ) {
       sawActivityRef.current = true;
     }
-    if (newParts.some((part) => part.type === "data-auto-continue")) {
+    if (
+      newParts.some((part) => part.type === "data-auto-continue") &&
+      (!autoContinueRunScheduledRef.current ||
+        autoContinueRunStartedRef.current)
+    ) {
       pendingAutoContinueRef.current = true;
       setIsAutoResuming(true);
       setIsAutoContinuing(true);
@@ -128,6 +139,11 @@ export function useAutoContinue({
   }, [dataStream, setIsAutoContinuing, setIsAutoResuming]);
 
   const scheduleAutoContinue = useCallback(() => {
+    if (
+      autoContinueRunScheduledRef.current &&
+      !autoContinueRunStartedRef.current
+    )
+      return;
     pendingAutoContinueRef.current = false;
     autoContinueRunScheduledRef.current = true;
     autoContinueRunStartedRef.current = false;
@@ -139,6 +155,17 @@ export function useAutoContinue({
     autoContinueTimerRef.current = setTimeout(() => {
       autoContinueTimerRef.current = null;
       if (!autoContinueRunScheduledRef.current) return;
+      // Cancellation or a new user request can arrive during the handoff delay.
+      // Re-check live state, not the values captured when the timer was created.
+      if (
+        hasManuallyStoppedRef.current ||
+        chatModeRef.current !== "agent" ||
+        (statusRef.current !== "ready" && statusRef.current !== "error")
+      ) {
+        clearAutoContinueLifecycle();
+        setIsAutoResuming(false);
+        return;
+      }
       sendMessageRef.current(
         {
           text: AUTO_CONTINUE_PROMPT,
@@ -146,7 +173,7 @@ export function useAutoContinue({
         },
         {
           body: {
-            mode: chatMode,
+            mode: chatModeRef.current,
             isAutoContinue: true,
             todos: todosRef.current,
             sandboxPreference: sandboxPreferenceRef.current,
@@ -157,7 +184,6 @@ export function useAutoContinue({
       );
     }, 500);
   }, [
-    chatMode,
     clearScheduledAutoContinue,
     setAutoContinueCount,
     setIsAutoContinuing,
@@ -166,6 +192,11 @@ export function useAutoContinue({
     sandboxPreferenceRef,
     agentPermissionModeRef,
     selectedModelRef,
+    hasManuallyStoppedRef,
+    chatModeRef,
+    statusRef,
+    clearAutoContinueLifecycle,
+    setIsAutoResuming,
   ]);
 
   // Fire auto-continue when status is ready and signal was detected.
@@ -189,7 +220,8 @@ export function useAutoContinue({
     // signal-less error streak is broken.
     errorChainCountRef.current = 0;
 
-    return clearScheduledAutoContinue;
+    // Do not cancel the handoff on unrelated data-stream updates: pending was
+    // consumed above, so React effect cleanup would otherwise lose the intent.
   }, [
     status,
     dataStream,
@@ -200,6 +232,12 @@ export function useAutoContinue({
     scheduleAutoContinue,
     clearScheduledAutoContinue,
   ]);
+
+  // Chat changes are handled above; unmount must cancel without sending later.
+  useEffect(
+    () => () => clearScheduledAutoContinue(),
+    [clearScheduledAutoContinue],
+  );
 
   useEffect(() => {
     if (status === "error") {

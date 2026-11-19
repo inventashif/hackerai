@@ -2525,14 +2525,22 @@ export const createChatHandler = () => {
                     // timeout stop source so agent runs always chain on.
                     const autoContinueStopSource =
                       getAgentAutoContinueStopSource({
+                        blocked:
+                          state.stoppedDueToBudgetExhaustion ||
+                          state.stoppedDueToAgentRunSpendCap ||
+                          state.stoppedDueToDoomLoop ||
+                          state.stoppedDueToAssistantContentLoop ||
+                          (isAborted &&
+                            !isPreemptiveAbort &&
+                            !state.stoppedDueToElapsedTimeout),
                         finishReason: state.streamFinishReason,
                         stoppedDueToTokenExhaustion:
                           state.stoppedDueToTokenExhaustion,
                         stoppedDueToElapsedTimeout:
-                          state.stoppedDueToElapsedTimeout,
+                          state.stoppedDueToElapsedTimeout || isPreemptiveAbort,
                         stoppedDueToPostSummarizationIncomplete:
                           state.stoppedDueToPostSummarizationIncomplete,
-                      }) ?? (isPreemptiveAbort ? "elapsed_timeout" : null);
+                      });
                     if (autoContinueStopSource && isAgentMode(mode)) {
                       writeAutoContinue(writer);
                       phLogger.info("Agent auto-continue signaled", {

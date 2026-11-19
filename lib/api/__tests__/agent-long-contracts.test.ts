@@ -1236,6 +1236,20 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     }
   });
 
+  test("both Agent backends pass elapsed timeouts and safety blocks to continuation", () => {
+    for (const source of [chatHandlerSrc, taskSrc]) {
+      const start = source.indexOf("const autoContinueStopSource");
+      const decision = source.slice(
+        start,
+        source.indexOf("if (autoContinueStopSource", start),
+      );
+      expect(decision).toContain("stoppedDueToElapsedTimeout:");
+      expect(decision).toContain("blocked:");
+      expect(decision).toContain("state.stoppedDueToBudgetExhaustion");
+      expect(decision).toContain("state.stoppedDueToDoomLoop");
+    }
+  });
+
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);
