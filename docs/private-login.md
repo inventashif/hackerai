@@ -47,7 +47,8 @@ issuer's origin is the accepted login/CSRF origin. Alternative site aliases
 should use the canonical site to sign in.
 
 Deploy the `personalLogin` tables/functions first. Deploy Vercel with the new
-values; then refresh Convex's JWKS configuration to the new public key source
+values; then set Convex's `PERSONAL_JWT_JWKS_URL` to
+`https://inventashif.tech/api/auth/jwks?v=<new-PERSONAL_JWT_KEY_ID>`
 and redeploy Convex. Rotating the old RSA key invalidates legacy public-issued
 tokens; merely changing the cookie name or hiding the login page does not.
 All old visitor sessions must be rejected after the rollout.

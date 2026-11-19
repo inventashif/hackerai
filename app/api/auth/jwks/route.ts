@@ -9,7 +9,7 @@ export async function GET() {
 
   return NextResponse.json(await getPersonalJwks(), {
     headers: {
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": "no-store",
     },
   });
 }
